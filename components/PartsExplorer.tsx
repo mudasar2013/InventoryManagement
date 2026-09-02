@@ -1,37 +1,24 @@
 "use client";
 
 import { PackageSearch, Search, X } from "lucide-react";
-import { useMemo, useState } from "react";
+import { useState } from "react";
+import { LinkBanner } from "@/components/LinkBanner";
 import { PartCard } from "@/components/PartCard";
-import type { Part, PartStatus } from "@/lib/types";
+import { countByStatus, searchParts } from "@/lib/inventory";
+import type { PartStatus } from "@/lib/types";
+import { useInventory } from "./InventoryProvider";
 
 type Filter = "All" | PartStatus;
 
 const filters: Filter[] = ["All", "In Stock", "Low Stock", "Out of Stock"];
 
-export function PartsExplorer({
-  parts,
-  counts,
-}: {
-  parts: Part[];
-  counts: { all: number; inStock: number; lowStock: number; outOfStock: number };
-}) {
+export function PartsExplorer() {
+  const { parts } = useInventory();
   const [query, setQuery] = useState("");
   const [filter, setFilter] = useState<Filter>("All");
+  const counts = countByStatus(parts);
 
-  const visible = useMemo(() => {
-    const normalized = query.trim().toLowerCase();
-    return parts.filter((part) => {
-      const matchesFilter = filter === "All" || part.status === filter;
-      if (!matchesFilter) return false;
-      if (!normalized) return true;
-      return (
-        part.part_number.toLowerCase().includes(normalized) ||
-        part.description.toLowerCase().includes(normalized) ||
-        part.bin_location.toLowerCase().includes(normalized)
-      );
-    });
-  }, [filter, parts, query]);
+  const visible = searchParts(parts, query, filter);
 
   const filterCount = (value: Filter) => {
     if (value === "All") return counts.all;
@@ -42,13 +29,18 @@ export function PartsExplorer({
 
   return (
     <div className="space-y-4">
+      <LinkBanner />
+
       <label className="relative block">
-        <span className="sr-only">Search parts</span>
+        <span className="sr-only">Search by part number</span>
         <Search className="pointer-events-none absolute left-3.5 top-1/2 size-4 -translate-y-1/2 text-stone-400" />
         <input
           value={query}
           onChange={(event) => setQuery(event.target.value)}
-          placeholder="Search number, description, or bin"
+          placeholder="Search by part number"
+          inputMode="search"
+          autoComplete="off"
+          autoCapitalize="characters"
           className="h-12 w-full rounded-2xl border border-stone-200 bg-white pl-10 pr-11 text-sm text-stone-900 shadow-sm outline-none placeholder:text-stone-400 focus:border-amber-400 focus:ring-2 focus:ring-amber-100"
         />
         {query ? (
@@ -62,6 +54,9 @@ export function PartsExplorer({
           </button>
         ) : null}
       </label>
+      <p className="text-xs text-stone-500">
+        Look up stock from the shelf — no job required. Description and bin also match.
+      </p>
 
       <div className="-mx-1 flex gap-2 overflow-x-auto px-1 pb-1">
         {filters.map((value) => {
@@ -88,7 +83,7 @@ export function PartsExplorer({
           <PackageSearch className="size-8 text-stone-400" />
           <h2 className="mt-3 text-base font-semibold text-stone-900">No parts match</h2>
           <p className="mt-1 text-sm text-stone-500">
-            Try a different part number, bin location, or stock filter.
+            Try a different part number, or clear the stock filter.
           </p>
         </div>
       ) : (

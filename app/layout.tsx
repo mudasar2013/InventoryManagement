@@ -1,6 +1,7 @@
 import type { Metadata, Viewport } from "next";
 import { Geist, Geist_Mono } from "next/font/google";
 import { BottomNav } from "@/components/BottomNav";
+import { InventoryProvider } from "@/components/InventoryProvider";
 import "./globals.css";
 
 const geistSans = Geist({
@@ -35,10 +36,12 @@ export default function RootLayout({ children }: LayoutProps<"/">) {
       className={`${geistSans.variable} ${geistMono.variable} h-full antialiased`}
     >
       <body className="min-h-full bg-background font-sans text-foreground">
-        <div className="mx-auto flex min-h-full w-full max-w-lg flex-col px-4 pb-24 pt-6 sm:px-6">
-          {children}
-        </div>
-        <BottomNav />
+        <InventoryProvider>
+          <div className="mx-auto flex min-h-full w-full max-w-lg flex-col px-4 pb-24 pt-6 sm:px-6">
+            {children}
+          </div>
+          <BottomNav />
+        </InventoryProvider>
       </body>
     </html>
   );

@@ -14,19 +14,34 @@ export function PartCard({ part }: { part: Part }) {
       </div>
       <div className="min-w-0 flex-1">
         <div className="flex items-start justify-between gap-2">
-          <p className="font-mono text-sm font-semibold tracking-wide text-stone-900">
-            {part.part_number}
-          </p>
+          <div>
+            <p className="text-[11px] font-semibold uppercase tracking-wide text-stone-500">
+              Part number
+            </p>
+            <p className="font-mono text-sm font-semibold tracking-wide text-stone-900">
+              {part.part_number}
+            </p>
+          </div>
           <PartStatusBadge status={part.status} />
         </div>
         <p className="mt-1 text-sm leading-5 text-stone-600">{part.description}</p>
-        <div className="mt-2 flex items-center gap-3 text-xs font-medium text-stone-500">
-          <span className="inline-flex items-center gap-1">
-            <MapPin className="size-3.5" />
-            Bin {part.bin_location}
-          </span>
-          <span>{part.quantity_on_hand} on hand</span>
-        </div>
+        <dl className="mt-3 grid grid-cols-2 gap-2 text-xs">
+          <div>
+            <dt className="font-semibold uppercase tracking-wide text-stone-500">
+              Bin location
+            </dt>
+            <dd className="mt-0.5 inline-flex items-center gap-1 font-medium text-stone-800">
+              <MapPin className="size-3.5 text-amber-700" />
+              {part.bin_location}
+            </dd>
+          </div>
+          <div>
+            <dt className="font-semibold uppercase tracking-wide text-stone-500">
+              Quantity on hand
+            </dt>
+            <dd className="mt-0.5 font-medium text-stone-800">{part.quantity_on_hand}</dd>
+          </div>
+        </dl>
       </div>
       <ChevronRight className="mt-3 size-4 shrink-0 text-stone-400" />
     </Link>
