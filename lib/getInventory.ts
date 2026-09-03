@@ -67,6 +67,11 @@ export const loadInventory = cache(
           ]);
           return { sourceId: source.id, parts, jobs, jobParts };
         } catch (error) {
+          // Full detail (including nested .cause) goes to the server
+          // terminal — the warning banner only gets a short phrase, and
+          // some causes (proxy/TLS internals, stack traces) are more
+          // than a shop-floor user needs to see.
+          console.error(`[getInventory] ${source.id} source failed:`, error);
           warnings.push(
             `${source.label} is unavailable right now (${describeError(
               error,

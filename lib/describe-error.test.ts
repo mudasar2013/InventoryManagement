@@ -19,6 +19,24 @@ test("describeError: statusCode alone still produces something readable", () => 
   assert.equal(describeError(error), "HTTP 401");
 });
 
+test("describeError: appends a nested .cause (undici's generic 'fetch failed' shape)", () => {
+  const causeError = new Error("getaddrinfo ENOTFOUND graph.microsoft.com");
+  const fetchFailed = Object.assign(new Error("fetch failed"), {
+    cause: causeError,
+  });
+  assert.equal(
+    describeError(fetchFailed),
+    "fetch failed: getaddrinfo ENOTFOUND graph.microsoft.com",
+  );
+});
+
+test("describeError: ignores a .cause that isn't an Error with a message", () => {
+  const fetchFailed = Object.assign(new Error("fetch failed"), {
+    cause: "not an error object",
+  });
+  assert.equal(describeError(fetchFailed), "fetch failed");
+});
+
 test("describeError: never returns an empty or bare-punctuation string", () => {
   assert.equal(describeError(new Error("")), "unknown error");
   assert.equal(describeError("just a string"), "unknown error");

@@ -8,6 +8,15 @@
  */
 export function describeError(error: unknown): string {
   if (error instanceof Error && error.message) {
+    // Node's built-in fetch (undici) throws a generic "fetch failed" for
+    // any network-layer problem (DNS, TLS/proxy interception, connection
+    // refused, ...) and puts the actual reason on .cause instead of the
+    // top-level message — surface it too, or "fetch failed" alone tells
+    // nobody anything.
+    const cause = (error as { cause?: unknown }).cause;
+    if (cause instanceof Error && cause.message) {
+      return `${error.message}: ${cause.message}`;
+    }
     return error.message;
   }
 
