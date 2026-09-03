@@ -1,6 +1,6 @@
 # Parts Inventory
 
-Mobile-first Next.js app for looking up appliance parts, bin locations, and stock levels against open service jobs.
+Mobile-first Next.js app for looking up appliance parts, bin locations, and stock levels against open service jobs. Reads live from multiple inventory sources, including a SharePoint-hosted workbook, behind Microsoft sign-in.
 
 ## What's included
 
