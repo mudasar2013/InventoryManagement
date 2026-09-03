@@ -29,13 +29,26 @@ The app is gated behind Microsoft sign-in (`proxy.ts`) because the SharePoint so
 
 1. In the Azure Portal, go to **Microsoft Entra ID → App registrations → New registration**.
 2. Add a redirect URI (platform: **Web**): `{NEXTAUTH_URL}/api/auth/callback/azure-ad` — for local dev that's `http://localhost:43127/api/auth/callback/azure-ad`.
-3. Under **Certificates & secrets**, create a client secret.
+3. Generate a certificate and upload it (this app authenticates with a certificate, not a client secret — many tenants now block client secrets by policy, see "Why a certificate" below):
+   ```bash
+   npm install       # needed once, for the generator's dependency
+   npm run generate-cert
+   ```
+   This writes `certs/azure-ad-private-key.pem` (keep it secret — it's already gitignored) and `certs/azure-ad-certificate.pem`, and prints two `AZURE_AD_CERT_..._BASE64` lines. Upload `certs/azure-ad-certificate.pem` under **Certificates & secrets → Certificates → Upload certificate**, and paste the two printed lines into `.env.local`.
 4. Under **API permissions**, add these **delegated** Microsoft Graph permissions and grant admin consent: `openid`, `profile`, `email`, `offline_access`, `Sites.Read.All`.
    - If your admin would rather not grant read access to every site, use `Sites.Selected` instead and grant it access to just the one site with the inventory workbook (see the [Graph docs on Sites.Selected](https://learn.microsoft.com/en-us/graph/permissions-selected-overview)) — swap the scope in `lib/auth/options.ts` if you go this route.
-5. Copy the **Application (client) ID**, **Directory (tenant) ID**, and the client secret you created into `.env.local` as `AZURE_AD_CLIENT_ID`, `AZURE_AD_TENANT_ID`, and `AZURE_AD_CLIENT_SECRET`.
-6. Set `NEXTAUTH_SECRET` to a random value (`openssl rand -base64 32`) and `NEXTAUTH_URL` to the URL the app runs at.
+5. Copy the **Application (client) ID** and **Directory (tenant) ID** into `.env.local` as `AZURE_AD_CLIENT_ID` and `AZURE_AD_TENANT_ID`.
+6. Set `NEXTAUTH_SECRET` to a random value (see `.env.example` for a PowerShell one-liner, or `openssl rand -base64 32` on macOS/Linux) and `NEXTAUTH_URL` to the URL the app runs at.
 
 Without this, the app has nowhere to redirect a signed-out visitor and will 500 on every page — this step isn't optional.
+
+### Why a certificate instead of a client secret
+
+If creating a client secret in your app registration fails with *"Client secrets are blocked by a tenant-wide policy"*, that's a Microsoft Entra app management policy — increasingly the default — not something specific to this app. A certificate sidesteps it entirely and is what Microsoft recommends anyway. The certificate `npm run generate-cert` creates is self-signed, which is fine here: Azure AD only needs it to verify that whoever's calling the token endpoint holds the matching private key, not that it was issued by a public certificate authority.
+
+Certificate-based auth to Azure AD's token endpoint has its own header requirements beyond generic OAuth (`PS256` + an `x5t#S256` header naming the certificate) that most generic libraries, including the one this app's sign-in library uses internally, don't produce correctly out of the box — see the comment at the top of `lib/auth/certificate.ts` for specifics if you're curious or need to debug a token-endpoint error.
+
+The certificate is valid for 2 years. Before it expires, run `npm run generate-cert` again (after deleting the old files in `certs/`), upload the new certificate to Azure AD alongside the old one, update `.env.local`, and remove the old certificate from Azure AD once the new one is confirmed working.
 
 ## Connecting the SharePoint inventory source (optional)
 

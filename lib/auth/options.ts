@@ -1,5 +1,10 @@
 import type { NextAuthOptions } from "next-auth";
 import AzureADProvider from "next-auth/providers/azure-ad";
+import {
+  buildClientAssertion,
+  getTokenEndpoint,
+  loadCertificateCredential,
+} from "./certificate";
 
 /**
  * Delegated Microsoft sign-in. The signed-in user's own Graph access
@@ -7,10 +12,21 @@ import AzureADProvider from "next-auth/providers/azure-ad";
  * inventory workbook — the app never has its own standing credential,
  * it can only see what the signed-in technician can see in SharePoint.
  *
+ * This app authenticates itself to Azure AD with a CERTIFICATE, not a
+ * client secret — some tenants block client secrets by a tenant-wide
+ * app management policy (see the README's "Sign-in setup" section), and
+ * Microsoft is steering everyone toward certificates anyway. See
+ * lib/auth/certificate.ts for why that couldn't just be
+ * `token_endpoint_auth_method: "private_key_jwt"` on the provider (the
+ * generic OAuth version openid-client supports out of the box doesn't
+ * satisfy Azure AD's specific header requirements) and why the token
+ * exchange below is hand-built instead.
+ *
  * Required environment variables (see .env.example):
  *   AZURE_AD_CLIENT_ID
- *   AZURE_AD_CLIENT_SECRET
  *   AZURE_AD_TENANT_ID
+ *   AZURE_AD_CERT_PRIVATE_KEY_BASE64   (from `npm run generate-cert`)
+ *   AZURE_AD_CERT_BASE64               (from `npm run generate-cert`)
  *   NEXTAUTH_SECRET
  *   NEXTAUTH_URL          (e.g. http://localhost:43127 in dev)
  *
@@ -27,43 +43,109 @@ import AzureADProvider from "next-auth/providers/azure-ad";
 
 const GRAPH_SCOPES = "offline_access openid profile email Sites.Read.All";
 
-interface AzureTokenSet {
+interface AzureTokenResponse {
   access_token: string;
   refresh_token?: string;
   expires_in: number;
+  error?: string;
+  error_description?: string;
+  // Azure AD's token response carries more fields (id_token, token_type,
+  // scope, ext_expires_in, ...) that next-auth's TokenSet reads from
+  // `token.request`'s return value — allow them through untyped rather
+  // than dropping them.
+  [key: string]: unknown;
 }
 
-async function refreshAccessToken(refreshToken: string): Promise<AzureTokenSet> {
-  const tenantId = process.env.AZURE_AD_TENANT_ID;
-  const response = await fetch(
-    `https://login.microsoftonline.com/${tenantId}/oauth2/v2.0/token`,
-    {
-      method: "POST",
-      headers: { "Content-Type": "application/x-www-form-urlencoded" },
-      body: new URLSearchParams({
-        client_id: process.env.AZURE_AD_CLIENT_ID ?? "",
-        client_secret: process.env.AZURE_AD_CLIENT_SECRET ?? "",
-        grant_type: "refresh_token",
-        refresh_token: refreshToken,
-        scope: GRAPH_SCOPES,
-      }),
-    },
-  );
+async function requestToken(
+  tenantId: string,
+  body: URLSearchParams,
+): Promise<AzureTokenResponse> {
+  const response = await fetch(getTokenEndpoint(tenantId), {
+    method: "POST",
+    headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    body,
+  });
 
+  const payload = (await response.json()) as AzureTokenResponse;
   if (!response.ok) {
-    throw new Error(`Failed to refresh Azure AD token: ${response.status}`);
+    throw new Error(
+      `Azure AD token request failed: ${payload.error ?? response.status} ${
+        payload.error_description ?? ""
+      }`.trim(),
+    );
   }
+  return payload;
+}
 
-  return response.json();
+async function refreshAccessToken(refreshToken: string): Promise<AzureTokenResponse> {
+  const clientId = process.env.AZURE_AD_CLIENT_ID ?? "";
+  const tenantId = process.env.AZURE_AD_TENANT_ID ?? "";
+  const assertion = await buildClientAssertion({
+    clientId,
+    tokenEndpoint: getTokenEndpoint(tenantId),
+    credential: loadCertificateCredential(),
+  });
+
+  return requestToken(
+    tenantId,
+    new URLSearchParams({
+      client_id: clientId,
+      grant_type: "refresh_token",
+      refresh_token: refreshToken,
+      scope: GRAPH_SCOPES,
+      client_assertion_type: "urn:ietf:params:oauth:client-assertion-type:jwt-bearer",
+      client_assertion: assertion,
+    }),
+  );
 }
 
 export const authOptions: NextAuthOptions = {
   providers: [
     AzureADProvider({
       clientId: process.env.AZURE_AD_CLIENT_ID ?? "",
-      clientSecret: process.env.AZURE_AD_CLIENT_SECRET ?? "",
+      // Required by next-auth's OAuthUserConfig type, but never actually
+      // used — the token.request override below authenticates with a
+      // certificate instead and never reaches the code path that would
+      // read this.
+      clientSecret: "unused-app-authenticates-with-a-certificate-instead",
       tenantId: process.env.AZURE_AD_TENANT_ID,
-      authorization: { params: { scope: `${GRAPH_SCOPES}` } },
+      authorization: { params: { scope: GRAPH_SCOPES } },
+      checks: ["pkce", "state"],
+      client: { token_endpoint_auth_method: "none" },
+      token: {
+        async request({ provider, params, checks }) {
+          // openid-client's built-in state check is bypassed by
+          // providing a custom token.request — restore it here so a
+          // forged callback can't complete sign-in (CSRF protection).
+          if (checks.state !== undefined && checks.state !== params.state) {
+            throw new Error("OAuth state mismatch on Azure AD callback.");
+          }
+
+          const clientId = provider.clientId as string;
+          const tenantId = process.env.AZURE_AD_TENANT_ID ?? "";
+          const assertion = await buildClientAssertion({
+            clientId,
+            tokenEndpoint: getTokenEndpoint(tenantId),
+            credential: loadCertificateCredential(),
+          });
+
+          const body = new URLSearchParams({
+            client_id: clientId,
+            grant_type: "authorization_code",
+            code: params.code as string,
+            redirect_uri: provider.callbackUrl,
+            client_assertion_type:
+              "urn:ietf:params:oauth:client-assertion-type:jwt-bearer",
+            client_assertion: assertion,
+          });
+          if (checks.code_verifier) {
+            body.set("code_verifier", checks.code_verifier as string);
+          }
+
+          const tokens = await requestToken(tenantId, body);
+          return { tokens };
+        },
+      },
     }),
   ],
   callbacks: {

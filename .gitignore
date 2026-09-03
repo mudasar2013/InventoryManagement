@@ -24,6 +24,9 @@
 .DS_Store
 *.pem
 
+# generated Azure AD certificate (npm run generate-cert) — private key, never commit
+/certs/
+
 # debug
 npm-debug.log*
 yarn-debug.log*
