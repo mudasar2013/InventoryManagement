@@ -1,23 +1,26 @@
-import { jobParts as seedJobParts, jobs, parts } from "./mockData";
 import type { Job, JobPart, Part, PartStatus } from "./types";
 
-export function getPartById(id: string, catalog: Part[] = parts): Part | undefined {
+export function getPartById(id: string, catalog: Part[]): Part | undefined {
   return catalog.find((part) => part.id === id);
 }
 
-export function getJobById(id: string): Job | undefined {
-  return jobs.find((job) => job.id === id);
+export function getJobById(id: string, catalog: Job[]): Job | undefined {
+  return catalog.find((job) => job.id === id);
 }
 
-export function getJobPartsForJob(jobId: string, links: JobPart[] = seedJobParts): JobPart[] {
+export function getJobPartsForJob(jobId: string, links: JobPart[]): JobPart[] {
   return links.filter((item) => item.job_id === jobId);
 }
 
-export function getJobsForPart(partId: string, links: JobPart[] = seedJobParts): Job[] {
+export function getJobsForPart(
+  partId: string,
+  links: JobPart[],
+  jobCatalog: Job[],
+): Job[] {
   const jobIds = new Set(
     links.filter((item) => item.part_id === partId).map((item) => item.job_id),
   );
-  return jobs.filter((job) => jobIds.has(job.id));
+  return jobCatalog.filter((job) => jobIds.has(job.id));
 }
 
 export function searchParts(
@@ -45,7 +48,7 @@ export function searchParts(
   });
 }
 
-export function countByStatus(catalog: Part[] = parts) {
+export function countByStatus(catalog: Part[]) {
   return {
     all: catalog.length,
     inStock: catalog.filter((part) => part.status === "In Stock").length,

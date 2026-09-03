@@ -8,7 +8,6 @@ import {
   isPartLinkedToJob,
   linkPartToJob,
 } from "@/lib/inventory";
-import { jobParts as seedJobParts, jobs as seedJobs, parts as seedParts } from "@/lib/mockData";
 import type { Job, JobPart, Part } from "@/lib/types";
 
 type LinkResult =
@@ -27,25 +26,39 @@ type InventoryContextValue = {
 
 const InventoryContext = createContext<InventoryContextValue | null>(null);
 
-export function InventoryProvider({ children }: { children: React.ReactNode }) {
-  const [parts] = useState<Part[]>(() => seedParts.map((part) => ({ ...part })));
+export function InventoryProvider({
+  initialParts,
+  initialJobs,
+  initialJobParts,
+  children,
+}: {
+  initialParts: Part[];
+  initialJobs: Job[];
+  initialJobParts: JobPart[];
+  children: React.ReactNode;
+}) {
+  // Seeded from the server's loadInventory() result (see app/layout.tsx)
+  // instead of importing mock data directly, so the client never has its
+  // own disconnected copy of the catalog.
+  const [parts] = useState<Part[]>(() => initialParts.map((part) => ({ ...part })));
+  const [jobs] = useState<Job[]>(() => initialJobs);
   const [jobParts, setJobParts] = useState<JobPart[]>(() =>
-    seedJobParts.map((item) => ({ ...item })),
+    initialJobParts.map((item) => ({ ...item })),
   );
   const [lastLinkMessage, setLastLinkMessage] = useState<string | null>(null);
 
   const value = useMemo<InventoryContextValue>(() => {
     return {
       parts,
-      jobs: seedJobs,
+      jobs,
       jobParts,
       lastLinkMessage,
-      jobsForPart: (partId: string) => getJobsForPart(partId, jobParts),
+      jobsForPart: (partId: string) => getJobsForPart(partId, jobParts, jobs),
       isLinked: (jobId: string, partId: string) =>
         isPartLinkedToJob(jobParts, jobId, partId),
       linkPart: (jobId: string, partId: string) => {
         const part = getPartById(partId, parts);
-        const job = getJobById(jobId);
+        const job = getJobById(jobId, jobs);
         if (!part) return { ok: false, reason: "missing-part" };
         if (!job) return { ok: false, reason: "missing-job" };
 
@@ -64,7 +77,7 @@ export function InventoryProvider({ children }: { children: React.ReactNode }) {
         return { ok: true, alreadyLinked, part, job };
       },
     };
-  }, [jobParts, lastLinkMessage, parts]);
+  }, [jobs, jobParts, lastLinkMessage, parts]);
 
   return (
     <InventoryContext.Provider value={value}>{children}</InventoryContext.Provider>

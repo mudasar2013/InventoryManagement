@@ -1,13 +1,15 @@
-import type { Job, JobPart, Part } from "./types";
+import type { Job, JobPart, RawPart } from "./types";
 
-export const parts: Part[] = [
+// Raw catalog rows only — no `status` field. Status is derived from
+// quantity_on_hand at read time (see lib/status.ts) so it can never
+// drift out of sync with the number that actually matters.
+export const parts: RawPart[] = [
   {
     id: "prt-001",
     part_number: "WR17X11705",
     description: "Refrigerator water filter cartridge",
     bin_location: "A-12-04",
     quantity_on_hand: 14,
-    status: "In Stock",
   },
   {
     id: "prt-002",
@@ -15,7 +17,6 @@ export const parts: Part[] = [
     description: "Washer drain pump assembly",
     bin_location: "B-03-11",
     quantity_on_hand: 3,
-    status: "Low Stock",
   },
   {
     id: "prt-003",
@@ -23,7 +24,6 @@ export const parts: Part[] = [
     description: "Electric dryer heating element",
     bin_location: "C-07-02",
     quantity_on_hand: 0,
-    status: "Out of Stock",
   },
   {
     id: "prt-004",
@@ -31,7 +31,6 @@ export const parts: Part[] = [
     description: "Range infinite burner switch",
     bin_location: "A-08-15",
     quantity_on_hand: 8,
-    status: "In Stock",
   },
   {
     id: "prt-005",
@@ -39,7 +38,6 @@ export const parts: Part[] = [
     description: "Dryer thermal fuse 3392519",
     bin_location: "D-01-06",
     quantity_on_hand: 22,
-    status: "In Stock",
   },
 ];
 
