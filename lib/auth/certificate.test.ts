@@ -5,6 +5,7 @@ import { importX509, jwtVerify } from "jose";
 import {
   buildClientAssertion,
   computeCertificateThumbprint,
+  computeCertificateThumbprintSha1,
   getTokenEndpoint,
   loadCertificateCredential,
 } from "./certificate";
@@ -29,6 +30,18 @@ test("computeCertificateThumbprint: matches manually computing the SHA-256 of th
   assert.match(thumbprint, /^[A-Za-z0-9_-]{43}$/);
 });
 
+test("computeCertificateThumbprintSha1: matches manually computing the SHA-1 of the DER cert", async () => {
+  const { certificatePem } = await generateTestCredential();
+  const thumbprint = computeCertificateThumbprintSha1(certificatePem);
+
+  // base64url, no padding, and the right rough length for a 20-byte SHA-1 digest.
+  assert.match(thumbprint, /^[A-Za-z0-9_-]{27}$/);
+  // Distinct from the SHA-256 thumbprint of the same cert — a regression
+  // here (e.g. both helpers hashing with the same algorithm) would
+  // silently defeat the point of sending both headers.
+  assert.notEqual(thumbprint, computeCertificateThumbprint(certificatePem));
+});
+
 test("buildClientAssertion: produces a JWT that verifies against the certificate's own public key", async () => {
   const credential = await generateTestCredential();
   const tokenEndpoint = getTokenEndpoint("test-tenant-id");
@@ -44,6 +57,10 @@ test("buildClientAssertion: produces a JWT that verifies against the certificate
 
   assert.equal(protectedHeader.alg, "PS256");
   assert.equal(protectedHeader.typ, "JWT");
+  assert.equal(
+    protectedHeader.x5t,
+    computeCertificateThumbprintSha1(credential.certificatePem),
+  );
   assert.equal(
     protectedHeader["x5t#S256"],
     computeCertificateThumbprint(credential.certificatePem),

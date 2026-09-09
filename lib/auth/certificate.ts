@@ -20,6 +20,18 @@ import { SignJWT, importPKCS8 } from "jose";
  * only sets `kid`). That mismatch fails silently at Azure's token
  * endpoint rather than at compile time, so this is hand-built and
  * covered by certificate.test.ts instead of delegated to the library.
+ *
+ * The header also carries the classic `x5t` (base64url SHA-1 thumbprint)
+ * alongside `x5t#S256`. The current docs above only mention `x5t#S256`,
+ * but in production this app hit AADSTS700027 ("client assertion
+ * contains an invalid signature") against a certificate that WAS
+ * correctly uploaded — multiple real-world reports (see e.g.
+ * https://learn.microsoft.com/answers/questions/2245020 and
+ * https://learn.microsoft.com/answers/questions/2280615) say Azure AD's
+ * certificate *lookup* for client assertions still keys off the SHA-1
+ * `x5t`, and a JWT carrying only `x5t#S256` can fail that lookup even
+ * against a correctly registered certificate. Sending both costs
+ * nothing and matches what Azure actually checks.
  */
 
 export interface CertificateCredential {
@@ -66,6 +78,20 @@ export function computeCertificateThumbprint(certificatePem: string): string {
 }
 
 /**
+ * base64url SHA-1 thumbprint of the certificate's DER encoding — the
+ * classic `x5t` header value. This is the thumbprint format the Azure
+ * Portal displays under Certificates & secrets, and what Azure AD's
+ * certificate lookup for client assertions still appears to rely on in
+ * practice (see the note on buildClientAssertion above). SHA-1 here is
+ * only ever used as an identifier/lookup key, never for anything
+ * security-sensitive — the assertion itself is still signed with PS256.
+ */
+export function computeCertificateThumbprintSha1(certificatePem: string): string {
+  const cert = new X509Certificate(certificatePem);
+  return createHash("sha1").update(cert.raw).digest("base64url");
+}
+
+/**
  * Builds one signed JWT client assertion for a single token-endpoint
  * request. Short-lived and single-use by design (fresh `jti`, 5 minute
  * expiry) — never cache or reuse the return value across requests.
@@ -80,10 +106,11 @@ export async function buildClientAssertion({
   credential: CertificateCredential;
 }): Promise<string> {
   const privateKey = await importPKCS8(credential.privateKeyPem, "PS256");
+  const x5t = computeCertificateThumbprintSha1(credential.certificatePem);
   const x5tS256 = computeCertificateThumbprint(credential.certificatePem);
 
   return new SignJWT({})
-    .setProtectedHeader({ alg: "PS256", typ: "JWT", "x5t#S256": x5tS256 })
+    .setProtectedHeader({ alg: "PS256", typ: "JWT", x5t, "x5t#S256": x5tS256 })
     .setIssuer(clientId)
     .setSubject(clientId)
     .setAudience(tokenEndpoint)
