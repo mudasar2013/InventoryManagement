@@ -10,7 +10,14 @@ export const metadata: Metadata = {
 
 export default async function SourcesPage() {
   const session = await getServerSession(authOptions);
-  const { sourceStatuses } = await loadInventory(session?.accessToken);
+  const { sourceStatuses, canAddSharePointSource } = await loadInventory(
+    session?.accessToken,
+  );
 
-  return <DataSourcesView statuses={sourceStatuses} />;
+  return (
+    <DataSourcesView
+      statuses={sourceStatuses}
+      canAddSharePointSource={canAddSharePointSource}
+    />
+  );
 }

@@ -6,6 +6,10 @@ import {
   createSharePointExcelSource,
   readSharePointExcelConfig,
 } from "./sources/sharepoint-excel-source";
+import {
+  isSourceStoreConfigured,
+  listStoredSharePointSources,
+} from "./sources/sharepoint-source-store";
 import type { InventorySource } from "./sources/types";
 import type { Job, JobPart, Part } from "./types";
 
@@ -14,7 +18,8 @@ import type { Job, JobPart, Part } from "./types";
  * "Data sources" settings page — see app/sources/page.tsx. Distinct from
  * `warnings` below: `warnings` is a short user-facing phrase for the main
  * catalog pages, this is the structured per-source detail that page needs
- * to render a real status list instead of one lumped-together message.
+ * to render a real status list (and an add/remove UI) instead of one
+ * lumped-together message.
  */
 export interface SourceStatus {
   id: string;
@@ -37,6 +42,10 @@ export interface SourceStatus {
    *  attempted despite being configured. Never raw error internals — see
    *  describeError. */
   note?: string;
+  /** Whether this entry can be deleted from the "Data sources" page. The
+   *  legacy env-var SharePoint source and the always-on local catalog are
+   *  not — removing those means editing environment variables/code. */
+  removable: boolean;
 }
 
 export interface Inventory {
@@ -47,39 +56,88 @@ export interface Inventory {
    *  UI can say "SharePoint is unavailable" instead of silently showing
    *  an incomplete catalog with no explanation. */
   warnings: string[];
-  /** Every source type the app knows about (configured or not), for the
-   *  "Data sources" settings page. */
+  /** Every source currently configured (env-based or added from the
+   *  page), for the "Data sources" settings page. */
   sourceStatuses: SourceStatus[];
+  /** Whether the "add a SharePoint source" form should be usable — false
+   *  when no Redis store is reachable to save new entries to. */
+  canAddSharePointSource: boolean;
 }
 
-interface SharePointSourceInfo {
-  configured: boolean;
-  detail?: string;
+interface SharePointEntry {
+  id: string;
+  label: string;
+  detail: string;
+  removable: boolean;
 }
 
-function buildSources(accessToken: string | undefined): {
+async function buildSources(accessToken: string | undefined): Promise<{
   sources: InventorySource[];
   priority: string[];
-  sharePoint: SharePointSourceInfo;
-} {
+  sharePointEntries: SharePointEntry[];
+}> {
   const sources: InventorySource[] = [localSource];
-  // SharePoint outranks the bundled demo catalog when both report the
-  // same part_number — see lib/sources/merge.ts.
-  const priority = ["sharepoint", "local"];
+  const priority: string[] = [];
+  const sharePointEntries: SharePointEntry[] = [];
 
-  const sharePointConfig = readSharePointExcelConfig();
-  const sharePoint: SharePointSourceInfo = {
-    configured: sharePointConfig !== null,
-    detail: sharePointConfig
-      ? `${sharePointConfig.siteHostname}${sharePointConfig.sitePath} · ${sharePointConfig.filePath} (table: ${sharePointConfig.tableName})`
-      : undefined,
-  };
-
-  if (sharePointConfig && accessToken) {
-    sources.unshift(createSharePointExcelSource(accessToken, sharePointConfig));
+  // The original single SharePoint source, still configured via
+  // environment variables. Kept working for whoever set this up before
+  // per-source storage existed — it just can't be edited or removed from
+  // the page, only by changing env vars and redeploying.
+  const envConfig = readSharePointExcelConfig();
+  if (envConfig) {
+    const id = "sharepoint-env";
+    sharePointEntries.push({
+      id,
+      label: "SharePoint workbook (env)",
+      detail: `${envConfig.siteHostname}${envConfig.sitePath} · ${envConfig.filePath} (table: ${envConfig.tableName})`,
+      removable: false,
+    });
+    priority.push(id);
+    if (accessToken) {
+      sources.unshift(
+        createSharePointExcelSource(accessToken, envConfig, {
+          id,
+          label: "SharePoint workbook (env)",
+        }),
+      );
+    }
   }
 
-  return { sources, priority, sharePoint };
+  // Additional SharePoint workbooks added from the "Data sources" page —
+  // see lib/sources/sharepoint-source-store.ts.
+  const stored = await listStoredSharePointSources();
+  for (const entry of stored) {
+    sharePointEntries.push({
+      id: entry.id,
+      label: entry.label,
+      detail: `${entry.siteHostname}${entry.sitePath} · ${entry.filePath} (table: ${entry.tableName})`,
+      removable: true,
+    });
+    priority.push(entry.id);
+    if (accessToken) {
+      sources.unshift(
+        createSharePointExcelSource(
+          accessToken,
+          {
+            siteHostname: entry.siteHostname,
+            sitePath: entry.sitePath,
+            filePath: entry.filePath,
+            tableName: entry.tableName,
+          },
+          { id: entry.id, label: entry.label },
+        ),
+      );
+    }
+  }
+
+  // Every SharePoint entry outranks the bundled demo catalog when they
+  // report the same part_number — see lib/sources/merge.ts. Among
+  // multiple SharePoint sources, earlier-added ones win ties, since
+  // that's the order they appear in `priority`.
+  priority.push("local");
+
+  return { sources, priority, sharePointEntries };
 }
 
 /**
@@ -100,7 +158,7 @@ function buildSources(accessToken: string | undefined): {
  */
 export const loadInventory = cache(
   async (accessToken?: string): Promise<Inventory> => {
-    const { sources, priority, sharePoint } = buildSources(accessToken);
+    const { sources, priority, sharePointEntries } = await buildSources(accessToken);
     const warnings: string[] = [];
 
     const results = await Promise.all(
@@ -140,32 +198,34 @@ export const loadInventory = cache(
     );
 
     const localResult = results.find((result) => result.sourceId === "local");
-    const sharePointResult = results.find((result) => result.sourceId === "sharepoint");
 
     const sourceStatuses: SourceStatus[] = [
       {
         id: "local",
         label: "Local catalog",
         configured: true,
+        removable: false,
         ok: localResult?.ok,
         partCount: localResult?.parts.length,
         note: localResult && !localResult.ok ? localResult.note : undefined,
       },
-      {
-        id: "sharepoint",
-        label: "SharePoint workbook",
-        detail: sharePoint.detail,
-        configured: sharePoint.configured,
-        ok: sharePointResult?.ok,
-        partCount: sharePointResult?.parts.length,
-        note: sharePointResult
-          ? sharePointResult.ok
-            ? undefined
-            : sharePointResult.note
-          : sharePoint.configured
-            ? "Signed-in session has no Microsoft access token yet — sign out and back in."
-            : "Not configured. Set SHAREPOINT_SITE_HOSTNAME, SHAREPOINT_SITE_PATH, SHAREPOINT_FILE_PATH, and SHAREPOINT_TABLE_NAME.",
-      },
+      ...sharePointEntries.map((entry): SourceStatus => {
+        const result = results.find((item) => item.sourceId === entry.id);
+        return {
+          id: entry.id,
+          label: entry.label,
+          detail: entry.detail,
+          configured: true,
+          removable: entry.removable,
+          ok: result?.ok,
+          partCount: result?.parts.length,
+          note: result
+            ? result.ok
+              ? undefined
+              : result.note
+            : "Signed-in session has no Microsoft access token yet — sign out and back in.",
+        };
+      }),
     ];
 
     return {
@@ -174,6 +234,7 @@ export const loadInventory = cache(
       jobParts: results.flatMap((result) => result.jobParts),
       warnings,
       sourceStatuses,
+      canAddSharePointSource: isSourceStoreConfigured(),
     };
   },
 );

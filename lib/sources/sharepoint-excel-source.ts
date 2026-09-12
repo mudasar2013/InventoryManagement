@@ -113,18 +113,26 @@ export function mapTableRowsToRawParts(
  * lib/auth/options.ts) — this source can only see what that person can
  * already see in SharePoint. Jobs stay local for now; nothing here
  * suggests the shop's job board also lives in this workbook.
+ *
+ * `identity` lets a caller give this instance its own id/label instead
+ * of the "sharepoint" default — required once more than one SharePoint
+ * workbook can be configured (see lib/sources/sharepoint-source-store.ts
+ * and lib/getInventory.ts), since merge.ts and the priority list key
+ * sources by id and two sources sharing an id would silently clobber
+ * each other's provenance tracking.
  */
 export function createSharePointExcelSource(
   accessToken: string,
   config: SharePointExcelConfig,
+  identity?: { id?: string; label?: string },
 ): InventorySource {
   const client = Client.init({
     authProvider: (done) => done(null, accessToken),
   });
 
   return {
-    id: "sharepoint",
-    label: `SharePoint workbook (${config.filePath})`,
+    id: identity?.id ?? "sharepoint",
+    label: identity?.label ?? `SharePoint workbook (${config.filePath})`,
     async fetchParts(): Promise<RawPart[]> {
       const site = await client
         .api(`/sites/${config.siteHostname}:${config.sitePath}`)
