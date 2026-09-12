@@ -1,12 +1,13 @@
 "use client";
 
-import { ClipboardList, Package } from "lucide-react";
+import { ClipboardList, Database, Package } from "lucide-react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 
 const tabs = [
   { href: "/", label: "Parts", icon: Package, match: (path: string) => path === "/" || path.startsWith("/parts") },
   { href: "/jobs", label: "Jobs", icon: ClipboardList, match: (path: string) => path.startsWith("/jobs") },
+  { href: "/sources", label: "Sources", icon: Database, match: (path: string) => path.startsWith("/sources") },
 ];
 
 export function BottomNav() {
