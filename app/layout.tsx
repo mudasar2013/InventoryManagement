@@ -51,7 +51,7 @@ export default async function RootLayout({ children }: LayoutProps<"/">) {
           initialJobs={jobs}
           initialJobParts={jobParts}
         >
-          <div className="mx-auto flex min-h-full w-full max-w-lg flex-col px-4 pb-24 pt-6 sm:px-6">
+          <div className="mx-auto flex min-h-full w-full max-w-lg flex-col px-5 pb-24 pt-7 sm:px-7">
             {session?.user ? (
               <div className="mb-3 flex items-center justify-between gap-2 text-xs text-stone-500">
                 <span className="truncate">
