@@ -41,3 +41,70 @@ export function describeError(error: unknown): string {
 
   return "unknown error";
 }
+
+/**
+ * The fuller counterpart to describeError() — for the "Data sources"
+ * page's per-source debug view, not the shop-floor warning banner. That
+ * page is used by whoever manages the SharePoint links (typos in a
+ * hostname/path are the most common failure), so it's worth showing
+ * everything that might pin down the cause: the full error name/message,
+ * every nested .cause (Node's fetch/undici can nest network failures
+ * several levels deep), and — for Microsoft Graph SDK errors — the
+ * status code, error code, request id, and raw response body, which
+ * carry the actually diagnostic detail when .message comes back empty.
+ * Never includes the access token or any request header.
+ */
+export function describeErrorDetail(error: unknown): string {
+  const lines: string[] = [];
+
+  if (error instanceof Error) {
+    lines.push(`${error.name}: ${error.message || "(empty message)"}`);
+
+    let cause = (error as { cause?: unknown }).cause;
+    let depth = 0;
+    while (cause !== undefined && cause !== null && depth < 5) {
+      if (cause instanceof Error) {
+        lines.push(`Caused by: ${cause.name}: ${cause.message || "(empty message)"}`);
+        cause = (cause as { cause?: unknown }).cause;
+      } else {
+        lines.push(`Caused by: ${String(cause)}`);
+        cause = undefined;
+      }
+      depth += 1;
+    }
+  } else if (error !== null && error !== undefined) {
+    lines.push(String(error));
+  } else {
+    lines.push("unknown error");
+  }
+
+  if (error && typeof error === "object") {
+    const withDetails = error as {
+      statusCode?: number;
+      code?: string | null;
+      requestId?: string | null;
+      body?: unknown;
+    };
+
+    if (typeof withDetails.statusCode === "number" && withDetails.statusCode !== -1) {
+      lines.push(`HTTP status: ${withDetails.statusCode}`);
+    }
+    if (withDetails.code) {
+      lines.push(`Code: ${withDetails.code}`);
+    }
+    if (withDetails.requestId) {
+      lines.push(`Request id: ${withDetails.requestId}`);
+    }
+    if (withDetails.body !== undefined && withDetails.body !== null) {
+      const bodyText =
+        typeof withDetails.body === "string"
+          ? withDetails.body
+          : JSON.stringify(withDetails.body);
+      if (bodyText && bodyText !== "{}" && bodyText !== "null") {
+        lines.push(`Body: ${bodyText.slice(0, 500)}`);
+      }
+    }
+  }
+
+  return lines.join("\n");
+}

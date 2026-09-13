@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { describeError } from "./describe-error";
+import { describeError, describeErrorDetail } from "./describe-error";
 
 test("describeError: uses a plain Error's message", () => {
   assert.equal(describeError(new Error("network timeout")), "network timeout");
@@ -42,4 +42,45 @@ test("describeError: never returns an empty or bare-punctuation string", () => {
   assert.equal(describeError("just a string"), "unknown error");
   assert.equal(describeError(null), "unknown error");
   assert.equal(describeError(undefined), "unknown error");
+});
+
+test("describeErrorDetail: includes name, message, and Graph SDK extras", () => {
+  const graphLikeError = Object.assign(new Error("itemNotFound"), {
+    statusCode: 404,
+    code: "itemNotFound",
+    requestId: "b31c83fd-944c-4663-aa50-5d9ceb367e19",
+    body: JSON.stringify({ error: { code: "itemNotFound", message: "The resource could not be found." } }),
+  });
+  const detail = describeErrorDetail(graphLikeError);
+  assert.match(detail, /^Error: itemNotFound$/m);
+  assert.match(detail, /HTTP status: 404/);
+  assert.match(detail, /Code: itemNotFound/);
+  assert.match(detail, /Request id: b31c83fd-944c-4663-aa50-5d9ceb367e19/);
+  assert.match(detail, /Body: .*The resource could not be found\./);
+});
+
+test("describeErrorDetail: walks nested .cause chains, not just one level", () => {
+  const root = new Error("connect ECONNREFUSED 127.0.0.1:443");
+  const middle = Object.assign(new Error("request to https://graph.microsoft.com failed"), {
+    cause: root,
+  });
+  const top = Object.assign(new Error("fetch failed"), { cause: middle });
+  const detail = describeErrorDetail(top);
+  assert.match(detail, /^Error: fetch failed$/m);
+  assert.match(detail, /Caused by: Error: request to https:\/\/graph\.microsoft\.com failed/);
+  assert.match(detail, /Caused by: Error: connect ECONNREFUSED 127\.0\.0\.1:443/);
+});
+
+test("describeErrorDetail: reports an empty message rather than a blank line", () => {
+  const graphLikeError = Object.assign(new Error(""), {
+    statusCode: 403,
+    code: "Forbidden",
+  });
+  assert.match(describeErrorDetail(graphLikeError), /\(empty message\)/);
+});
+
+test("describeErrorDetail: never returns an empty string", () => {
+  assert.equal(describeErrorDetail(null), "unknown error");
+  assert.equal(describeErrorDetail(undefined), "unknown error");
+  assert.equal(describeErrorDetail("just a string"), "just a string");
 });

@@ -1,20 +1,12 @@
 import { getServerSession } from "next-auth/next";
 import { NextResponse } from "next/server";
 import { authOptions } from "@/lib/auth/options";
+import { parseSharePointSourceInput } from "@/lib/sources/parse-sharepoint-input";
 import {
   addStoredSharePointSource,
   isSourceStoreConfigured,
   listStoredSharePointSources,
-  type NewSharePointSource,
 } from "@/lib/sources/sharepoint-source-store";
-
-const REQUIRED_FIELDS: (keyof NewSharePointSource)[] = [
-  "label",
-  "siteHostname",
-  "sitePath",
-  "filePath",
-  "tableName",
-];
 
 // Every route in this app is already gated by proxy.ts (the auth
 // middleware matches everything except /api/auth), so an unauthenticated
@@ -57,31 +49,13 @@ export async function POST(request: Request) {
   }
 
   const body = await request.json().catch(() => null);
-  if (!body || typeof body !== "object") {
-    return NextResponse.json({ error: "Invalid request body." }, { status: 400 });
+  const parsed = parseSharePointSourceInput(body);
+  if ("error" in parsed) {
+    return NextResponse.json({ error: parsed.error }, { status: 400 });
   }
-
-  const record = body as Record<string, unknown>;
-  const missing = REQUIRED_FIELDS.filter(
-    (field) => typeof record[field] !== "string" || !(record[field] as string).trim(),
-  );
-  if (missing.length > 0) {
-    return NextResponse.json(
-      { error: `Missing or empty fields: ${missing.join(", ")}` },
-      { status: 400 },
-    );
-  }
-
-  const input: NewSharePointSource = {
-    label: (record.label as string).trim(),
-    siteHostname: (record.siteHostname as string).trim(),
-    sitePath: (record.sitePath as string).trim(),
-    filePath: (record.filePath as string).trim(),
-    tableName: (record.tableName as string).trim(),
-  };
 
   try {
-    const source = await addStoredSharePointSource(input);
+    const source = await addStoredSharePointSource(parsed.input);
     return NextResponse.json({ source }, { status: 201 });
   } catch (error) {
     return NextResponse.json(

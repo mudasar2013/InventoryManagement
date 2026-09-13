@@ -5,14 +5,17 @@ import {
   CheckCircle2,
   CircleSlash,
   Database,
+  Pencil,
   Plus,
+  RefreshCw,
   Trash2,
   X,
 } from "lucide-react";
 import { useRouter } from "next/navigation";
-import { useState } from "react";
+import { useState, useTransition } from "react";
 import { AppHeader } from "@/components/AppHeader";
 import type { SourceStatus } from "@/lib/getInventory";
+import type { StoredSharePointSource } from "@/lib/sources/sharepoint-source-store";
 
 /**
  * Visual state for one source's badge. Four states, not just ok/error:
@@ -50,7 +53,15 @@ function statusMeta(status: SourceStatus) {
   };
 }
 
-const emptyForm = {
+type SourceForm = {
+  label: string;
+  siteHostname: string;
+  sitePath: string;
+  filePath: string;
+  tableName: string;
+};
+
+const emptyForm: SourceForm = {
   label: "",
   siteHostname: "",
   sitePath: "",
@@ -66,11 +77,29 @@ export function DataSourcesView({
   canAddSharePointSource: boolean;
 }) {
   const router = useRouter();
+  const [isRefreshing, startRefresh] = useTransition();
   const [open, setOpen] = useState(false);
   const [form, setForm] = useState(emptyForm);
   const [submitting, setSubmitting] = useState(false);
   const [removingId, setRemovingId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+
+  // Editing an existing source is a two-step affair: fetch its current
+  // (untruncated) field values from the collection endpoint — the
+  // status list only carries a truncated `detail` string, not the raw
+  // siteHostname/sitePath/filePath/tableName a form needs — then show
+  // those in the same field layout as the add form.
+  const [loadingEditId, setLoadingEditId] = useState<string | null>(null);
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [editForm, setEditForm] = useState<SourceForm>(emptyForm);
+  const [editSubmitting, setEditSubmitting] = useState(false);
+
+  function handleRefresh() {
+    setError(null);
+    startRefresh(() => {
+      router.refresh();
+    });
+  }
 
   async function handleAdd(event: React.FormEvent) {
     event.preventDefault();
@@ -97,6 +126,9 @@ export function DataSourcesView({
   }
 
   async function handleRemove(id: string) {
+    if (editingId === id) {
+      setEditingId(null);
+    }
     setRemovingId(id);
     setError(null);
     try {
@@ -115,12 +147,86 @@ export function DataSourcesView({
     }
   }
 
+  async function handleStartEdit(status: SourceStatus) {
+    setError(null);
+    setOpen(false);
+    setLoadingEditId(status.id);
+    try {
+      const response = await fetch("/api/sources/sharepoint");
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        throw new Error(payload.error ?? "Failed to load source details.");
+      }
+      const sources = (payload.sources ?? []) as StoredSharePointSource[];
+      const match = sources.find((source) => source.id === status.id);
+      if (!match) {
+        throw new Error("Couldn't find that source's details — it may have just been removed.");
+      }
+      setEditForm({
+        label: match.label,
+        siteHostname: match.siteHostname,
+        sitePath: match.sitePath,
+        filePath: match.filePath,
+        tableName: match.tableName,
+      });
+      setEditingId(status.id);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to load source details.");
+    } finally {
+      setLoadingEditId(null);
+    }
+  }
+
+  function handleCancelEdit() {
+    setEditingId(null);
+    setError(null);
+  }
+
+  async function handleSaveEdit(event: React.FormEvent) {
+    event.preventDefault();
+    if (!editingId) {
+      return;
+    }
+    setEditSubmitting(true);
+    setError(null);
+    try {
+      const response = await fetch(`/api/sources/sharepoint/${editingId}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(editForm),
+      });
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        throw new Error(payload.error ?? "Failed to update source.");
+      }
+      setEditingId(null);
+      router.refresh();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to update source.");
+    } finally {
+      setEditSubmitting(false);
+    }
+  }
+
   return (
     <main className="space-y-6">
-      <AppHeader
-        title="Data sources"
-        subtitle="Everything the parts catalog reads from, and whether it's connected."
-      />
+      <div className="flex items-start justify-between gap-3">
+        <div className="min-w-0">
+          <AppHeader
+            title="Data sources"
+            subtitle="Everything the parts catalog reads from, and whether it's connected."
+          />
+        </div>
+        <button
+          type="button"
+          onClick={handleRefresh}
+          disabled={isRefreshing}
+          className="mt-1 inline-flex shrink-0 items-center gap-1.5 rounded-full border border-stone-200 bg-white px-3 py-1.5 text-xs font-semibold text-stone-700 disabled:opacity-60"
+        >
+          <RefreshCw className={`size-3.5 ${isRefreshing ? "animate-spin" : ""}`} />
+          {isRefreshing ? "Refreshing…" : "Refresh"}
+        </button>
+      </div>
 
       {error ? (
         <p className="inline-flex items-start gap-2 rounded-2xl border border-rose-200 bg-rose-50 px-3.5 py-3 text-sm leading-5 text-rose-900">
@@ -132,6 +238,7 @@ export function DataSourcesView({
       <ul className="space-y-3">
         {statuses.map((status) => {
           const { label, classes, Icon } = statusMeta(status);
+          const isEditing = editingId === status.id;
           return (
             <li
               key={status.id}
@@ -159,15 +266,26 @@ export function DataSourcesView({
                     {label}
                   </span>
                   {status.removable ? (
-                    <button
-                      type="button"
-                      onClick={() => handleRemove(status.id)}
-                      disabled={removingId === status.id}
-                      aria-label={`Remove ${status.label}`}
-                      className="rounded-full p-1.5 text-stone-400 hover:bg-rose-50 hover:text-rose-600 disabled:opacity-50"
-                    >
-                      <Trash2 className="size-3.5" />
-                    </button>
+                    <>
+                      <button
+                        type="button"
+                        onClick={() => handleStartEdit(status)}
+                        disabled={loadingEditId === status.id}
+                        aria-label={`Edit ${status.label}`}
+                        className="rounded-full p-1.5 text-stone-400 hover:bg-amber-50 hover:text-amber-700 disabled:opacity-50"
+                      >
+                        <Pencil className="size-3.5" />
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => handleRemove(status.id)}
+                        disabled={removingId === status.id}
+                        aria-label={`Remove ${status.label}`}
+                        className="rounded-full p-1.5 text-stone-400 hover:bg-rose-50 hover:text-rose-600 disabled:opacity-50"
+                      >
+                        <Trash2 className="size-3.5" />
+                      </button>
+                    </>
                   ) : null}
                 </div>
               </div>
@@ -180,6 +298,88 @@ export function DataSourcesView({
 
               {status.note ? (
                 <p className="mt-2 text-xs leading-5 text-stone-600">{status.note}</p>
+              ) : null}
+
+              {status.debugDetail ? (
+                <details className="mt-2 text-xs">
+                  <summary className="cursor-pointer select-none font-medium text-stone-500 hover:text-stone-700">
+                    Show details
+                  </summary>
+                  <pre className="mt-2 max-h-56 overflow-auto whitespace-pre-wrap break-words rounded-lg bg-stone-50 p-2.5 text-[11px] leading-4 text-stone-700">
+                    {status.debugDetail}
+                  </pre>
+                </details>
+              ) : null}
+
+              {isEditing ? (
+                <form
+                  onSubmit={handleSaveEdit}
+                  className="mt-4 space-y-3 border-t border-stone-100 pt-4"
+                >
+                  <div className="flex items-center justify-between gap-2">
+                    <p className="text-sm font-semibold text-stone-900">
+                      Edit this source
+                    </p>
+                    <button
+                      type="button"
+                      onClick={handleCancelEdit}
+                      className="rounded-full p-1 text-stone-400"
+                      aria-label="Cancel edit"
+                    >
+                      <X className="size-4" />
+                    </button>
+                  </div>
+
+                  <Field
+                    label="Name"
+                    placeholder="e.g. Downtown shop inventory"
+                    value={editForm.label}
+                    onChange={(value) => setEditForm((f) => ({ ...f, label: value }))}
+                  />
+                  <Field
+                    label="Site hostname"
+                    placeholder="contoso.sharepoint.com"
+                    value={editForm.siteHostname}
+                    onChange={(value) =>
+                      setEditForm((f) => ({ ...f, siteHostname: value }))
+                    }
+                  />
+                  <Field
+                    label="Site path"
+                    placeholder="/sites/ServiceOps"
+                    value={editForm.sitePath}
+                    onChange={(value) => setEditForm((f) => ({ ...f, sitePath: value }))}
+                  />
+                  <Field
+                    label="File path"
+                    placeholder="Shared Documents/Inventory.xlsx"
+                    value={editForm.filePath}
+                    onChange={(value) => setEditForm((f) => ({ ...f, filePath: value }))}
+                  />
+                  <Field
+                    label="Table name"
+                    placeholder="Parts"
+                    value={editForm.tableName}
+                    onChange={(value) => setEditForm((f) => ({ ...f, tableName: value }))}
+                  />
+
+                  <div className="flex gap-2">
+                    <button
+                      type="button"
+                      onClick={handleCancelEdit}
+                      className="flex-1 rounded-xl border border-stone-200 px-3 py-2.5 text-sm font-semibold text-stone-700"
+                    >
+                      Cancel
+                    </button>
+                    <button
+                      type="submit"
+                      disabled={editSubmitting}
+                      className="flex-1 rounded-xl bg-stone-900 px-3 py-2.5 text-sm font-semibold text-white disabled:opacity-60"
+                    >
+                      {editSubmitting ? "Saving…" : "Save & refresh"}
+                    </button>
+                  </div>
+                </form>
               ) : null}
             </li>
           );
@@ -248,7 +448,10 @@ export function DataSourcesView({
         ) : (
           <button
             type="button"
-            onClick={() => setOpen(true)}
+            onClick={() => {
+              setEditingId(null);
+              setOpen(true);
+            }}
             className="inline-flex w-full items-center justify-center gap-1.5 rounded-xl border border-dashed border-stone-300 px-3 py-2.5 text-sm font-semibold text-stone-700"
           >
             <Plus className="size-4" />

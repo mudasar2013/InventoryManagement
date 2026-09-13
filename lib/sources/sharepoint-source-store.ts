@@ -100,6 +100,41 @@ export async function addStoredSharePointSource(
   return entry;
 }
 
+/**
+ * Overwrites an existing entry's fields in place (id and createdAt are
+ * kept) — used by the "Data sources" page to fix a typo'd hostname/path
+ * without deleting and re-adding the source (which would also lose its
+ * position in the merge-priority list). Throws if the store isn't
+ * configured, or if no entry with that id exists.
+ */
+export async function updateStoredSharePointSource(
+  id: string,
+  updates: NewSharePointSource,
+): Promise<StoredSharePointSource> {
+  const redis = getRedis();
+  if (!redis) {
+    throw new Error(
+      "No Redis store configured. Add a Redis integration to this Vercel project " +
+        "(Storage tab → Marketplace Database Providers) to enable editing sources here.",
+    );
+  }
+
+  const current = await listStoredSharePointSources();
+  const index = current.findIndex((source) => source.id === id);
+  if (index === -1) {
+    throw new Error("That source no longer exists — it may have been removed already.");
+  }
+
+  const updated: StoredSharePointSource = {
+    ...current[index],
+    ...updates,
+  };
+  const next = [...current];
+  next[index] = updated;
+  await redis.set(STORE_KEY, next);
+  return updated;
+}
+
 export async function removeStoredSharePointSource(id: string): Promise<void> {
   const redis = getRedis();
   if (!redis) {

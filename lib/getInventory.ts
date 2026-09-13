@@ -1,5 +1,5 @@
 import { cache } from "react";
-import { describeError } from "./describe-error";
+import { describeError, describeErrorDetail } from "./describe-error";
 import { localSource } from "./sources/local-source";
 import { mergeParts } from "./sources/merge";
 import {
@@ -42,6 +42,13 @@ export interface SourceStatus {
    *  attempted despite being configured. Never raw error internals — see
    *  describeError. */
   note?: string;
+  /** Full diagnostic text for the most recent fetch failure — error
+   *  name/message, the full .cause chain, and (for Microsoft Graph
+   *  errors) status code/error code/request id/response body. Shown
+   *  behind a "Show details" toggle on the Data sources page rather
+   *  than always-on, since it's meant for pinning down a typo'd
+   *  hostname/path rather than everyday reading. See describeErrorDetail. */
+  debugDetail?: string;
   /** Whether this entry can be deleted from the "Data sources" page. The
    *  legacy env-var SharePoint source and the always-on local catalog are
    *  not — removing those means editing environment variables/code. */
@@ -177,6 +184,7 @@ export const loadInventory = cache(
           // than a shop-floor user needs to see.
           console.error(`[getInventory] ${source.id} source failed:`, error);
           const note = describeError(error);
+          const debugDetail = describeErrorDetail(error);
           warnings.push(
             `${source.label} is unavailable right now (${note}). Showing the rest of the catalog.`,
           );
@@ -187,6 +195,7 @@ export const loadInventory = cache(
             jobParts: [],
             ok: false as const,
             note,
+            debugDetail,
           };
         }
       }),
@@ -208,6 +217,7 @@ export const loadInventory = cache(
         ok: localResult?.ok,
         partCount: localResult?.parts.length,
         note: localResult && !localResult.ok ? localResult.note : undefined,
+        debugDetail: localResult && !localResult.ok ? localResult.debugDetail : undefined,
       },
       ...sharePointEntries.map((entry): SourceStatus => {
         const result = results.find((item) => item.sourceId === entry.id);
@@ -224,6 +234,7 @@ export const loadInventory = cache(
               ? undefined
               : result.note
             : "Signed-in session has no Microsoft access token yet — sign out and back in.",
+          debugDetail: result && !result.ok ? result.debugDetail : undefined,
         };
       }),
     ];
