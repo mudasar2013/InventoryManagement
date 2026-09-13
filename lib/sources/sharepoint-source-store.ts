@@ -9,12 +9,16 @@ import { Redis } from "@upstash/redis";
  * still works and is kept for backward compatibility, but can't be added
  * to or removed without editing environment variables.
  *
- * Uses whatever Redis a Vercel Marketplace storage integration injects
- * (Upstash's UPSTASH_REDIS_REST_URL / UPSTASH_REDIS_REST_TOKEN — Vercel
- * KV itself was retired and existing stores auto-migrated to Upstash in
- * December 2024, see https://vercel.com/docs/redis). Nothing here is
- * Upstash-specific beyond the client and env var names — swapping to a
- * different REST-compatible Redis provider only touches getRedis().
+ * Uses whatever Redis a Vercel Marketplace storage integration injects.
+ * In practice the Vercel Marketplace "Upstash for Redis" integration sets
+ * KV_REST_API_URL / KV_REST_API_TOKEN (it keeps the legacy Vercel KV
+ * variable names for compatibility with existing KV code — Vercel KV
+ * itself was retired and existing stores auto-migrated to Upstash in
+ * December 2024, see https://vercel.com/docs/redis). Some setups instead
+ * expose Upstash's own UPSTASH_REDIS_REST_URL / UPSTASH_REDIS_REST_TOKEN
+ * names (e.g. Redis.fromEnv() conventions, or a manually-created Upstash
+ * database), so both pairs are checked here — UPSTASH_* first, then
+ * falling back to the KV_* names actually present on this project.
  */
 export interface StoredSharePointSource {
   id: string;
@@ -30,13 +34,26 @@ export type NewSharePointSource = Omit<StoredSharePointSource, "id" | "createdAt
 
 const STORE_KEY = "inventory:sharepoint-sources";
 
-function getRedis(): Redis | null {
-  const url = process.env.UPSTASH_REDIS_REST_URL;
-  const token = process.env.UPSTASH_REDIS_REST_TOKEN;
+/**
+ * Reads whichever REST Redis credentials the current Vercel project
+ * actually has, trying Upstash's own env var names first and falling
+ * back to the KV_REST_API_* names the Vercel Marketplace "Upstash for
+ * Redis" integration sets by default.
+ */
+function getRedisCredentials(): { url: string; token: string } | null {
+  const url =
+    process.env.UPSTASH_REDIS_REST_URL ?? process.env.KV_REST_API_URL;
+  const token =
+    process.env.UPSTASH_REDIS_REST_TOKEN ?? process.env.KV_REST_API_TOKEN;
   if (!url || !token) {
     return null;
   }
-  return new Redis({ url, token });
+  return { url, token };
+}
+
+function getRedis(): Redis | null {
+  const credentials = getRedisCredentials();
+  return credentials ? new Redis(credentials) : null;
 }
 
 /**
@@ -45,9 +62,7 @@ function getRedis(): Redis | null {
  * pointing at Vercel's storage marketplace instead.
  */
 export function isSourceStoreConfigured(): boolean {
-  return Boolean(
-    process.env.UPSTASH_REDIS_REST_URL && process.env.UPSTASH_REDIS_REST_TOKEN,
-  );
+  return getRedisCredentials() !== null;
 }
 
 /** Returns [] (never throws) when Redis isn't configured — same
