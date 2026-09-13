@@ -1,6 +1,6 @@
 "use client";
 
-import { ClipboardList, Database, Package } from "lucide-react";
+import { ClipboardList, Database, Package, Settings } from "lucide-react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 
@@ -8,6 +8,7 @@ const tabs = [
   { href: "/", label: "Parts", icon: Package, match: (path: string) => path === "/" || path.startsWith("/parts") },
   { href: "/jobs", label: "Jobs", icon: ClipboardList, match: (path: string) => path.startsWith("/jobs") },
   { href: "/sources", label: "Sources", icon: Database, match: (path: string) => path.startsWith("/sources") },
+  { href: "/settings", label: "Settings", icon: Settings, match: (path: string) => path.startsWith("/settings") },
 ];
 
 export function BottomNav() {

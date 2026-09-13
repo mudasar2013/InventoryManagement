@@ -1,5 +1,5 @@
 import { Client } from "@microsoft/microsoft-graph-client";
-import type { RawPart } from "../types";
+import type { ExtraFields, RawPart } from "../types";
 import type { InventorySource } from "./types";
 
 /**
@@ -21,6 +21,12 @@ export interface SharePointColumnMap {
   bin_location?: string;
   quantity_on_hand: string;
   id?: string;
+  /** Row-1 header this source uses for category, when it has one — see
+   *  RawPart.category. Every other column not named by one of this
+   *  map's fields is captured automatically as an extra field (see
+   *  ExtraFields), so category gets its own entry only because it's
+   *  common enough to deserve a first-class filter on the Parts page. */
+  category?: string;
 }
 
 /**
@@ -100,6 +106,34 @@ export function readSharePointExcelConfig(): SharePointExcelConfig | null {
  *  agree on what "this column isn't in the sheet" means. */
 function headerIndex(headers: string[], header: string | undefined): number {
   return header === undefined ? -1 : headers.findIndex((h) => String(h).trim() === header);
+}
+
+/** Spellings a shop-floor sheet uses for a yes/no cell — checked
+ *  case-insensitively, trimmed. Used to both detect whether a whole
+ *  column is boolean-shaped (see columnLooksBoolean) and to read one
+ *  cell's boolean value once a column has been classified as such. */
+const BOOLEAN_CELL_VALUES = new Set(["YES", "NO", "Y", "N", "TRUE", "FALSE"]);
+const TRUE_CELL_VALUES = new Set(["YES", "Y", "TRUE"]);
+
+/** A column "looks boolean" when every non-blank cell it has is some
+ *  spelling of yes/no — e.g. "Ebay Ready (Yes/No)", "In Inventory",
+ *  "CORE RETURNED", "Sold". A column that's entirely blank in the rows
+ *  seen doesn't count (nothing to infer from; safer to show it as
+ *  text than to guess). Checked once per column across every row,
+ *  rather than per cell, so one part's blank cell in an otherwise
+ *  yes/no column still renders as a checkbox rather than flickering to
+ *  a text field depending on which row happens to be blank. */
+function columnLooksBoolean(rows: unknown[][], columnIndex: number): boolean {
+  let sawValue = false;
+  for (const row of rows) {
+    const trimmed = String(row[columnIndex] ?? "").trim();
+    if (trimmed === "") continue;
+    sawValue = true;
+    if (!BOOLEAN_CELL_VALUES.has(trimmed.toUpperCase())) {
+      return false;
+    }
+  }
+  return sawValue;
 }
 
 function slugify(value: string): string {
@@ -324,6 +358,7 @@ export function mapTableRowsToRawParts(
   const binLocationIdx = headerIndex(headers, columnMap.bin_location);
   const quantityIdx = headerIndex(headers, columnMap.quantity_on_hand);
   const idIdx = headerIndex(headers, columnMap.id);
+  const categoryIdx = headerIndex(headers, columnMap.category);
 
   if (partNumberIdx === -1 || quantityIdx === -1) {
     throw new Error(
@@ -335,17 +370,50 @@ export function mapTableRowsToRawParts(
     );
   }
 
+  // Every header not already claimed by a named field (part number,
+  // description, bin location, quantity, id, category) becomes an
+  // extra field — see RawPart.extraFields. Classifying which of those
+  // are boolean-shaped is done once per column, across every row, not
+  // per cell (see columnLooksBoolean).
+  const mappedIndices = new Set(
+    [partNumberIdx, descriptionIdx, binLocationIdx, quantityIdx, idIdx, categoryIdx].filter(
+      (idx) => idx !== -1,
+    ),
+  );
+  const extraIndices = headers
+    .map((header, idx) => ({ header: String(header ?? "").trim(), idx }))
+    .filter(({ header, idx }) => header.length > 0 && !mappedIndices.has(idx));
+  const booleanIndices = new Set(
+    extraIndices
+      .map(({ idx }) => idx)
+      .filter((idx) => columnLooksBoolean(rows, idx)),
+  );
+
   return rows
     .filter((row) => String(row[partNumberIdx] ?? "").trim().length > 0)
     .map((row) => {
       const partNumber = String(row[partNumberIdx]).trim();
       const quantity = Number(row[quantityIdx]);
+
+      const extraFields: ExtraFields = {};
+      for (const { header, idx } of extraIndices) {
+        const cell = row[idx];
+        if (booleanIndices.has(idx)) {
+          const normalized = String(cell ?? "").trim().toUpperCase();
+          extraFields[header] = { kind: "boolean", value: TRUE_CELL_VALUES.has(normalized) };
+        } else {
+          extraFields[header] = { kind: "text", value: String(cell ?? "") };
+        }
+      }
+
       return {
         id: idIdx !== -1 ? String(row[idIdx]) : `sharepoint-${slugify(partNumber)}`,
         part_number: partNumber,
         description: descriptionIdx !== -1 ? String(row[descriptionIdx] ?? "") : "",
         bin_location: binLocationIdx !== -1 ? String(row[binLocationIdx] ?? "") : "",
         quantity_on_hand: Number.isFinite(quantity) ? quantity : 0,
+        category: categoryIdx !== -1 ? String(row[categoryIdx] ?? "") : undefined,
+        extraFields,
       };
     });
 }
@@ -406,6 +474,40 @@ function columnIndexToLetters(index: number): string {
   return letters;
 }
 
+/** Builds the (header, value) pairs to write for one part's fields —
+ *  the named fields (part number, description, ...) by their mapped
+ *  column, plus every entry in `fields.extraFields` by that entry's own
+ *  header text (extra fields aren't looked up through columnMap at
+ *  all: the header they were read from, see mapTableRowsToRawParts, is
+ *  exactly the header they're written back to). Shared by both the
+ *  Table row path (applyFieldsToRow) and the plain-worksheet path
+ *  (writeFieldsToWorksheetRow) so the two can't drift on what counts
+ *  as "this field has a column to write to". A boolean extra field is
+ *  written back as "YES"/"NO", matching how these sheets already
+ *  spell it (see BOOLEAN_CELL_VALUES) rather than a literal true/false
+ *  a shop-floor sheet has never seen. */
+function fieldAssignments(
+  columnMap: SharePointColumnMap,
+  fields: PartFields,
+): [string | undefined, unknown][] {
+  const assignments: [string | undefined, unknown][] = [
+    [columnMap.part_number, fields.part_number],
+    [columnMap.description, fields.description],
+    [columnMap.bin_location, fields.bin_location],
+    [columnMap.quantity_on_hand, fields.quantity_on_hand],
+  ];
+  if (columnMap.category !== undefined) {
+    assignments.push([columnMap.category, fields.category ?? ""]);
+  }
+  for (const [header, field] of Object.entries(fields.extraFields ?? {})) {
+    assignments.push([
+      header,
+      field.kind === "boolean" ? (field.value ? "YES" : "NO") : field.value,
+    ]);
+  }
+  return assignments;
+}
+
 /** Overwrites the mapped cells of an existing row array in place —
  *  shared by the Table update and Table add-row paths, both of which
  *  work with a full-width row array matching the table's own header
@@ -417,13 +519,7 @@ function applyFieldsToRow(
   columnMap: SharePointColumnMap,
   fields: PartFields,
 ): void {
-  const assignments: [string | undefined, unknown][] = [
-    [columnMap.part_number, fields.part_number],
-    [columnMap.description, fields.description],
-    [columnMap.bin_location, fields.bin_location],
-    [columnMap.quantity_on_hand, fields.quantity_on_hand],
-  ];
-  for (const [header, value] of assignments) {
+  for (const [header, value] of fieldAssignments(columnMap, fields)) {
     const idx = headerIndex(headers, header);
     if (idx !== -1) {
       row[idx] = value;
@@ -448,14 +544,7 @@ async function writeFieldsToWorksheetRow(
   columnMap: SharePointColumnMap,
   fields: PartFields,
 ): Promise<void> {
-  const assignments: [string | undefined, unknown][] = [
-    [columnMap.part_number, fields.part_number],
-    [columnMap.description, fields.description],
-    [columnMap.bin_location, fields.bin_location],
-    [columnMap.quantity_on_hand, fields.quantity_on_hand],
-  ];
-
-  for (const [header, value] of assignments) {
+  for (const [header, value] of fieldAssignments(columnMap, fields)) {
     const colIdx = headerIndex(headers, header);
     if (colIdx === -1) {
       continue;

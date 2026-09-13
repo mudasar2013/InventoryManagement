@@ -3,10 +3,12 @@
 import {
   AlertTriangle,
   ArrowLeft,
+  Check,
   ClipboardList,
   MapPin,
-  Package,
+  Minus,
   Pencil,
+  Tag,
   X,
 } from "lucide-react";
 import Link from "next/link";
@@ -17,10 +19,12 @@ import { FormField } from "@/components/FormField";
 import { useInventory } from "@/components/InventoryProvider";
 import { LinkBanner } from "@/components/LinkBanner";
 import { JobStatusBadge, PartStatusBadge } from "@/components/StatusBadge";
+import type { ExtraFields } from "@/lib/types";
 
 export function PartDetail({ partId }: { partId: string }) {
   const router = useRouter();
-  const { parts, jobsForPart, writableSources, applyPartUpdate } = useInventory();
+  const { parts, jobsForPart, writableSources, applyPartUpdate, applyBulkUpdate } =
+    useInventory();
   const part = parts.find((item) => item.id === partId);
   const [editing, setEditing] = useState(false);
   const [form, setForm] = useState({
@@ -28,7 +32,9 @@ export function PartDetail({ partId }: { partId: string }) {
     description: "",
     bin_location: "",
     quantity_on_hand: "0",
+    category: "",
     sourceId: "",
+    extraFields: {} as ExtraFields,
   });
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -60,6 +66,7 @@ export function PartDetail({ partId }: { partId: string }) {
   const editableSources = writableSources.filter((source) =>
     editableSourceIds.includes(source.id),
   );
+  const extraFieldEntries = Object.entries(part.extraFields ?? {});
 
   function startEditing() {
     setError(null);
@@ -69,9 +76,21 @@ export function PartDetail({ partId }: { partId: string }) {
       description: part.description,
       bin_location: part.bin_location,
       quantity_on_hand: String(part.quantity_on_hand),
+      category: part.category ?? "",
       sourceId: editableSources[0]?.id ?? "",
+      extraFields: part.extraFields ? { ...part.extraFields } : {},
     });
     setEditing(true);
+  }
+
+  function setExtraFieldValue(header: string, value: string | boolean) {
+    setForm((f) => ({
+      ...f,
+      extraFields: {
+        ...f.extraFields,
+        [header]: { ...f.extraFields[header], value },
+      },
+    }));
   }
 
   async function handleSave(event: React.FormEvent) {
@@ -90,6 +109,8 @@ export function PartDetail({ partId }: { partId: string }) {
           description: form.description,
           bin_location: form.bin_location,
           quantity_on_hand: Number(form.quantity_on_hand),
+          category: form.category,
+          extraFields: form.extraFields,
         }),
       });
       const payload = await response.json().catch(() => ({}));
@@ -101,6 +122,8 @@ export function PartDetail({ partId }: { partId: string }) {
         description: form.description.trim(),
         bin_location: form.bin_location.trim(),
         quantity_on_hand: Math.max(0, Number(form.quantity_on_hand)),
+        category: form.category.trim(),
+        extraFields: form.extraFields,
       };
       const newId = applyPartUpdate(part.id, fields);
       setEditing(false);
@@ -129,7 +152,7 @@ export function PartDetail({ partId }: { partId: string }) {
       <section className="rounded-2xl border border-stone-200 bg-white p-5 shadow-sm">
         <div className="flex items-start justify-between gap-3">
           <div className="flex size-12 items-center justify-center rounded-xl bg-amber-50 text-amber-700">
-            <Package className="size-6" />
+            <Tag className="size-6" />
           </div>
           <div className="flex items-center gap-2">
             <PartStatusBadge status={part.status} />
@@ -152,6 +175,11 @@ export function PartDetail({ partId }: { partId: string }) {
           {part.part_number}
         </p>
         <p className="mt-2 text-base leading-6 text-stone-600">{part.description}</p>
+        {part.category ? (
+          <p className="mt-2 inline-flex items-center rounded-full bg-stone-100 px-2.5 py-1 text-xs font-semibold text-stone-600">
+            {part.category}
+          </p>
+        ) : null}
       </section>
 
       {editing ? (
@@ -219,6 +247,41 @@ export function PartDetail({ partId }: { partId: string }) {
               value={form.quantity_on_hand}
               onChange={(value) => setForm((f) => ({ ...f, quantity_on_hand: value }))}
             />
+            <FormField
+              label="Category"
+              value={form.category}
+              onChange={(value) => setForm((f) => ({ ...f, category: value }))}
+              required={false}
+            />
+
+            {Object.keys(form.extraFields).length > 0 ? (
+              <div className="space-y-3 border-t border-stone-100 pt-3">
+                <p className="text-xs font-semibold uppercase tracking-wide text-stone-500">
+                  Every other column this source has
+                </p>
+                {Object.entries(form.extraFields).map(([header, field]) =>
+                  field.kind === "boolean" ? (
+                    <label key={header} className="flex items-center justify-between gap-2">
+                      <span className="text-sm text-stone-700">{header}</span>
+                      <input
+                        type="checkbox"
+                        checked={Boolean(field.value)}
+                        onChange={(event) => setExtraFieldValue(header, event.target.checked)}
+                        className="size-4 rounded border-stone-300 text-amber-700 focus:ring-amber-400"
+                      />
+                    </label>
+                  ) : (
+                    <FormField
+                      key={header}
+                      label={header}
+                      value={String(field.value)}
+                      onChange={(value) => setExtraFieldValue(header, value)}
+                      required={false}
+                    />
+                  ),
+                )}
+              </div>
+            ) : null}
 
             <button
               type="submit"
@@ -250,6 +313,42 @@ export function PartDetail({ partId }: { partId: string }) {
           </p>
         </div>
       </section>
+
+      <TagsEditor part={part} applyBulkUpdate={applyBulkUpdate} />
+
+      {extraFieldEntries.length > 0 ? (
+        <section className="space-y-2">
+          <h2 className="text-sm font-semibold uppercase tracking-wide text-stone-500">
+            More from the source sheet
+          </h2>
+          <div className="rounded-2xl border border-stone-200 bg-white p-4">
+            <dl className="grid grid-cols-2 gap-3 text-xs">
+              {extraFieldEntries.map(([header, field]) => (
+                <div key={header}>
+                  <dt className="font-semibold uppercase tracking-wide text-stone-500">
+                    {header}
+                  </dt>
+                  <dd className="mt-0.5 font-medium text-stone-800">
+                    {field.kind === "boolean" ? (
+                      field.value ? (
+                        <span className="inline-flex items-center gap-1 text-emerald-700">
+                          <Check className="size-3.5" /> Yes
+                        </span>
+                      ) : (
+                        <span className="inline-flex items-center gap-1 text-stone-400">
+                          <Minus className="size-3.5" /> No
+                        </span>
+                      )
+                    ) : (
+                      String(field.value) || "—"
+                    )}
+                  </dd>
+                </div>
+              ))}
+            </dl>
+          </div>
+        </section>
+      ) : null}
 
       <section className="space-y-3">
         <h2 className="text-sm font-semibold uppercase tracking-wide text-stone-500">
@@ -294,5 +393,145 @@ export function PartDetail({ partId }: { partId: string }) {
 
       <AttachPartToJob part={part} />
     </main>
+  );
+}
+
+/** The tags card + its own small edit affordance — kept independent of
+ *  the main "Edit this part" form above because tags are app-managed
+ *  (see lib/tags-store.ts) and apply to a part regardless of whether
+ *  it has any writable SharePoint source at all. A part from the local
+ *  demo catalog can be tagged even though it can never be "edited" in
+ *  the SharePoint sense. */
+function TagsEditor({
+  part,
+  applyBulkUpdate,
+}: {
+  part: { id: string; part_number: string; tags?: string[] };
+  applyBulkUpdate: (updates: { part_number: string; fields: { tags?: string[] } }[]) => void;
+}) {
+  const { tags: vocabulary } = useInventory();
+  const [editing, setEditing] = useState(false);
+  const [selected, setSelected] = useState<string[]>([]);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  function startEditing() {
+    setError(null);
+    setSelected(part.tags ?? []);
+    setEditing(true);
+  }
+
+  function toggle(tag: string) {
+    setSelected((current) =>
+      current.includes(tag) ? current.filter((t) => t !== tag) : [...current, tag],
+    );
+  }
+
+  async function handleSave() {
+    setSaving(true);
+    setError(null);
+    try {
+      const response = await fetch("/api/parts/tags", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ part_number: part.part_number, tags: selected }),
+      });
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        throw new Error(payload.error ?? "Failed to update tags.");
+      }
+      applyBulkUpdate([{ part_number: part.part_number, fields: { tags: selected } }]);
+      setEditing(false);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to update tags.");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <section className="space-y-2">
+      <div className="flex items-center justify-between">
+        <h2 className="text-sm font-semibold uppercase tracking-wide text-stone-500">Tags</h2>
+        {!editing ? (
+          <button
+            type="button"
+            onClick={startEditing}
+            aria-label="Edit tags"
+            className="rounded-full p-1.5 text-stone-400 hover:bg-amber-50 hover:text-amber-700"
+          >
+            <Pencil className="size-3.5" />
+          </button>
+        ) : null}
+      </div>
+
+      {error ? (
+        <p className="inline-flex items-start gap-2 rounded-xl border border-rose-200 bg-rose-50 px-3 py-2.5 text-sm leading-5 text-rose-900">
+          <AlertTriangle className="mt-0.5 size-4 shrink-0" />
+          {error}
+        </p>
+      ) : null}
+
+      {editing ? (
+        vocabulary.length === 0 ? (
+          <p className="rounded-2xl border border-dashed border-stone-300 bg-white px-4 py-4 text-sm text-stone-500">
+            No tags exist yet — add some from Settings first.
+          </p>
+        ) : (
+          <div className="space-y-3 rounded-2xl border border-stone-200 bg-white p-4">
+            <div className="flex flex-wrap gap-2">
+              {vocabulary.map((tag) => {
+                const active = selected.includes(tag);
+                return (
+                  <button
+                    key={tag}
+                    type="button"
+                    onClick={() => toggle(tag)}
+                    className={`rounded-full px-3 py-1.5 text-xs font-semibold ring-1 ${
+                      active
+                        ? "bg-stone-900 text-white ring-stone-900"
+                        : "bg-white text-stone-600 ring-stone-200"
+                    }`}
+                  >
+                    {tag}
+                  </button>
+                );
+              })}
+            </div>
+            <div className="flex gap-2">
+              <button
+                type="button"
+                onClick={() => setEditing(false)}
+                className="flex-1 rounded-xl border border-stone-200 px-3 py-2 text-sm font-semibold text-stone-700"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={handleSave}
+                disabled={saving}
+                className="flex-1 rounded-xl bg-stone-900 px-3 py-2 text-sm font-semibold text-white disabled:opacity-60"
+              >
+                {saving ? "Saving…" : "Save tags"}
+              </button>
+            </div>
+          </div>
+        )
+      ) : (part.tags ?? []).length > 0 ? (
+        <div className="flex flex-wrap gap-2">
+          {(part.tags ?? []).map((tag) => (
+            <span
+              key={tag}
+              className="inline-flex items-center gap-1 rounded-full bg-stone-100 px-2.5 py-1 text-xs font-semibold text-stone-600"
+            >
+              <Tag className="size-3" />
+              {tag}
+            </span>
+          ))}
+        </div>
+      ) : (
+        <p className="text-sm text-stone-500">No tags yet.</p>
+      )}
+    </section>
   );
 }

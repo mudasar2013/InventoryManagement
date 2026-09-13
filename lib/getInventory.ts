@@ -9,6 +9,7 @@ import {
 import { createSharePointExcelSource, readSharePointExcelConfig } from "./sources/sharepoint-excel-source";
 import { isSourceStoreConfigured, listStoredSharePointSources } from "./sources/sharepoint-source-store";
 import type { InventorySource } from "./sources/types";
+import { getTagsForParts, isTagStoreConfigured, listTags } from "./tags-store";
 import type { Job, JobPart, Part } from "./types";
 
 /**
@@ -73,6 +74,12 @@ export interface Inventory {
   /** Whether the "add a SharePoint source" form should be usable — false
    *  when no Redis store is reachable to save new entries to. */
   canAddSharePointSource: boolean;
+  /** The full tag vocabulary (see lib/tags-store.ts), for the Settings
+   *  page and for populating the Parts page's tag filter. */
+  tags: string[];
+  /** Whether the Settings page's tag management (add/rename/delete) is
+   *  usable — same Redis-reachability check as canAddSharePointSource. */
+  canManageTags: boolean;
 }
 
 interface SharePointEntry {
@@ -219,10 +226,24 @@ export const loadInventory = cache(
       }),
     );
 
-    const parts = mergeParts(
+    const mergedParts = mergeParts(
       results.map(({ sourceId, parts }) => ({ sourceId, parts })),
       priority,
     );
+
+    // Tags never come from a source — attach them in one batched Redis
+    // read rather than per-part, so a catalog of hundreds of parts
+    // doesn't mean hundreds of lookups. A part with no tags simply
+    // isn't in tagsByPartNumber; `?? []` below is what makes `tags`
+    // always an array rather than sometimes undefined.
+    const [tagsByPartNumber, tags] = await Promise.all([
+      getTagsForParts(mergedParts.map((part) => part.part_number)),
+      listTags(),
+    ]);
+    const parts = mergedParts.map((part) => ({
+      ...part,
+      tags: tagsByPartNumber[part.part_number] ?? [],
+    }));
 
     const localResult = results.find((result) => result.sourceId === "local");
 
@@ -265,6 +286,8 @@ export const loadInventory = cache(
       warnings,
       sourceStatuses,
       canAddSharePointSource: isSourceStoreConfigured(),
+      tags,
+      canManageTags: isTagStoreConfigured(),
     };
   },
 );

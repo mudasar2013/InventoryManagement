@@ -65,6 +65,7 @@ type SourceForm = {
   descriptionColumn: string;
   binLocationColumn: string;
   idColumn: string;
+  categoryColumn: string;
 };
 
 const emptyForm: SourceForm = {
@@ -78,6 +79,7 @@ const emptyForm: SourceForm = {
   descriptionColumn: "",
   binLocationColumn: "",
   idColumn: "",
+  categoryColumn: "",
 };
 
 export function DataSourcesView({
@@ -187,6 +189,7 @@ export function DataSourcesView({
         descriptionColumn: match.descriptionColumn ?? "",
         binLocationColumn: match.binLocationColumn ?? "",
         idColumn: match.idColumn ?? "",
+        categoryColumn: match.categoryColumn ?? "",
       });
       setEditingId(status.id);
     } catch (err) {
@@ -434,6 +437,15 @@ export function DataSourcesView({
                     required={false}
                   />
                   <Field
+                    label="Category column"
+                    placeholder="Category"
+                    value={editForm.categoryColumn}
+                    onChange={(value) =>
+                      setEditForm((f) => ({ ...f, categoryColumn: value }))
+                    }
+                    required={false}
+                  />
+                  <Field
                     label="Id column"
                     placeholder="Leave blank to generate one from the part number"
                     value={editForm.idColumn}
@@ -543,6 +555,13 @@ export function DataSourcesView({
               placeholder="BinLocation"
               value={form.binLocationColumn}
               onChange={(value) => setForm((f) => ({ ...f, binLocationColumn: value }))}
+              required={false}
+            />
+            <Field
+              label="Category column"
+              placeholder="Category"
+              value={form.categoryColumn}
+              onChange={(value) => setForm((f) => ({ ...f, categoryColumn: value }))}
               required={false}
             />
             <Field

@@ -23,6 +23,7 @@ test("parseSharePointSourceInput: accepts a well-formed body as-is", () => {
       descriptionColumn: undefined,
       binLocationColumn: undefined,
       idColumn: undefined,
+      categoryColumn: undefined,
     });
   }
 });
@@ -33,12 +34,14 @@ test("parseSharePointSourceInput: trims and carries through optional column fiel
     descriptionColumn: " Description ",
     binLocationColumn: " Location ",
     idColumn: "",
+    categoryColumn: " Category ",
   });
   assert.ok("input" in result);
   if ("input" in result) {
     assert.equal(result.input.descriptionColumn, "Description");
     assert.equal(result.input.binLocationColumn, "Location");
     assert.equal(result.input.idColumn, undefined);
+    assert.equal(result.input.categoryColumn, "Category");
   }
 });
 

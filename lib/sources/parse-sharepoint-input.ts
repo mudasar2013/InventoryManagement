@@ -49,6 +49,7 @@ export function parseSharePointSourceInput(
       descriptionColumn: normalizeOptionalField(record.descriptionColumn),
       binLocationColumn: normalizeOptionalField(record.binLocationColumn),
       idColumn: normalizeOptionalField(record.idColumn),
+      categoryColumn: normalizeOptionalField(record.categoryColumn),
     },
   };
 }

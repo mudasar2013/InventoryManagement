@@ -36,6 +36,7 @@ export function columnMapForStoredSource(
     description: entry.descriptionColumn,
     bin_location: entry.binLocationColumn,
     id: entry.idColumn,
+    category: entry.categoryColumn,
   };
 }
 

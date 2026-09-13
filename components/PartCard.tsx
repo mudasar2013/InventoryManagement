@@ -1,14 +1,24 @@
-import { ChevronRight, MapPin, Package } from "lucide-react";
+import { ChevronRight, MapPin, Package, Tag } from "lucide-react";
 import Link from "next/link";
 import type { Part } from "@/lib/types";
 import { PartStatusBadge } from "./StatusBadge";
 
-export function PartCard({ part }: { part: Part }) {
-  return (
-    <Link
-      href={`/parts/${part.id}`}
-      className="flex items-start gap-3 rounded-2xl border border-stone-200 bg-white p-4 shadow-sm transition-colors active:bg-stone-50"
-    >
+/** `disableLink` + `onClick` support the Parts page's bulk-select mode
+ *  (see PartsExplorer.tsx): tapping a card there should toggle its
+ *  checkbox, not navigate away to the part's own page. Renders a
+ *  `<button>` instead of a `<Link>` in that mode — same visual card,
+ *  different interaction. */
+export function PartCard({
+  part,
+  disableLink = false,
+  onClick,
+}: {
+  part: Part;
+  disableLink?: boolean;
+  onClick?: () => void;
+}) {
+  const content = (
+    <>
       <div className="flex size-11 shrink-0 items-center justify-center rounded-xl bg-amber-50 text-amber-700">
         <Package className="size-5" />
       </div>
@@ -42,7 +52,41 @@ export function PartCard({ part }: { part: Part }) {
             <dd className="mt-0.5 font-medium text-stone-800">{part.quantity_on_hand}</dd>
           </div>
         </dl>
+        {part.tags && part.tags.length > 0 ? (
+          <div className="mt-2 flex flex-wrap gap-1.5">
+            {part.tags.map((tag) => (
+              <span
+                key={tag}
+                className="inline-flex items-center gap-1 rounded-full bg-stone-100 px-2 py-0.5 text-[10px] font-semibold text-stone-600"
+              >
+                <Tag className="size-2.5" />
+                {tag}
+              </span>
+            ))}
+          </div>
+        ) : null}
       </div>
+    </>
+  );
+
+  if (disableLink) {
+    return (
+      <button
+        type="button"
+        onClick={onClick}
+        className="flex w-full items-start gap-3 rounded-2xl border border-stone-200 bg-white p-4 text-left shadow-sm transition-colors active:bg-stone-50"
+      >
+        {content}
+      </button>
+    );
+  }
+
+  return (
+    <Link
+      href={`/parts/${part.id}`}
+      className="flex items-start gap-3 rounded-2xl border border-stone-200 bg-white p-4 shadow-sm transition-colors active:bg-stone-50"
+    >
+      {content}
       <ChevronRight className="mt-3 size-4 shrink-0 text-stone-400" />
     </Link>
   );

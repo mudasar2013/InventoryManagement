@@ -10,7 +10,7 @@ import {
 } from "@/lib/inventory";
 import type { SourceStatus } from "@/lib/getInventory";
 import { deriveStatus } from "@/lib/status";
-import type { Job, JobPart, Part } from "@/lib/types";
+import type { ExtraFields, Job, JobPart, Part } from "@/lib/types";
 
 type LinkResult =
   | { ok: true; alreadyLinked: boolean; part: Part; job: Job }
@@ -26,12 +26,18 @@ export type WritableSourceOption = { id: string; label: string };
 /** The fields a technician can edit or supply for a part — mirrors
  *  lib/sources/sharepoint-excel-source.ts's PartFields, kept as a
  *  separate type since this module is client-only and that one pulls
- *  in the Graph SDK. */
+ *  in the Graph SDK. `category` and `extraFields` are optional since a
+ *  source without those columns configured never reports them. `tags`
+ *  is always present (defaulting to []) since it's app-managed, not
+ *  read from any source. */
 export type EditablePartFields = {
   part_number: string;
   description: string;
   bin_location: string;
   quantity_on_hand: number;
+  category?: string;
+  extraFields?: ExtraFields;
+  tags?: string[];
 };
 
 function slugify(value: string): string {
@@ -52,6 +58,11 @@ type InventoryContextValue = {
   /** SharePoint sources a part can be added to or edited in — see
    *  WritableSourceOption. */
   writableSources: WritableSourceOption[];
+  /** The full app-managed tag vocabulary (see lib/tags-store.ts) — for
+   *  the tag filter on the Parts page and the tag picker on the part
+   *  detail edit form. Managed from the Settings page, which reloads
+   *  via router.refresh() rather than a local-state method here. */
+  tags: string[];
   /** Applies a successful PATCH /api/parts write to local state — the
    *  API call already wrote the source workbook; this just keeps the
    *  in-memory catalog in sync without a full reload. `previousId` is
@@ -62,6 +73,15 @@ type InventoryContextValue = {
   /** Applies a successful POST /api/parts (add) to local state — see
    *  applyPartUpdate. Returns the new part's id. */
   applyNewPart: (fields: EditablePartFields, sourceId: string) => string;
+  /** Applies a successful POST /api/parts/bulk write to local state —
+   *  one partial field set per part_number (only the fields that were
+   *  actually part of the bulk edit; anything a given part's source
+   *  couldn't write is simply absent from its entry, same as a normal
+   *  edit skipping an unmapped column). Keyed by part_number rather
+   *  than id since a bulk edit never renames parts. */
+  applyBulkUpdate: (
+    updates: { part_number: string; fields: Partial<EditablePartFields> }[],
+  ) => void;
 };
 
 const InventoryContext = createContext<InventoryContextValue | null>(null);
@@ -71,12 +91,14 @@ export function InventoryProvider({
   initialJobs,
   initialJobParts,
   initialSourceStatuses,
+  initialTags,
   children,
 }: {
   initialParts: Part[];
   initialJobs: Job[];
   initialJobParts: JobPart[];
   initialSourceStatuses: SourceStatus[];
+  initialTags: string[];
   children: React.ReactNode;
 }) {
   // Seeded from the server's loadInventory() result (see app/layout.tsx)
@@ -93,6 +115,7 @@ export function InventoryProvider({
       .filter((status) => status.id !== "local")
       .map((status) => ({ id: status.id, label: status.label })),
   );
+  const [tags] = useState<string[]>(() => initialTags);
 
   const value = useMemo<InventoryContextValue>(() => {
     return {
@@ -101,6 +124,7 @@ export function InventoryProvider({
       jobParts,
       lastLinkMessage,
       writableSources,
+      tags,
       jobsForPart: (partId: string) => getJobsForPart(partId, jobParts, jobs),
       isLinked: (jobId: string, partId: string) =>
         isPartLinkedToJob(jobParts, jobId, partId),
@@ -159,8 +183,25 @@ export function InventoryProvider({
         ]);
         return newId;
       },
+      applyBulkUpdate: (updates) => {
+        const byPartNumber = new Map(updates.map((update) => [update.part_number, update.fields]));
+        setParts((current) =>
+          current.map((part) => {
+            const fields = byPartNumber.get(part.part_number);
+            if (!fields) return part;
+            return {
+              ...part,
+              ...fields,
+              status:
+                fields.quantity_on_hand !== undefined
+                  ? deriveStatus(fields.quantity_on_hand)
+                  : part.status,
+            };
+          }),
+        );
+      },
     };
-  }, [jobs, jobParts, lastLinkMessage, parts, writableSources]);
+  }, [jobs, jobParts, lastLinkMessage, parts, tags, writableSources]);
 
   return (
     <InventoryContext.Provider value={value}>{children}</InventoryContext.Provider>

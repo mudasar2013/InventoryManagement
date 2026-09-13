@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { Redis } from "@upstash/redis";
+import { getRedis, isRedisConfigured } from "../redis";
 
 /**
  * A SharePoint workbook a technician added from the "Data sources" page
@@ -42,6 +42,11 @@ export interface StoredSharePointSource {
   binLocationColumn?: string;
   quantityColumn?: string;
   idColumn?: string;
+  /** Row-1 header for this source's category column, if it has one —
+   *  see SharePointColumnMap.category. Optional for the same reason as
+   *  the other column fields: sources added before this field existed
+   *  simply have no category column configured. */
+  categoryColumn?: string;
   createdAt: string;
 }
 
@@ -50,35 +55,14 @@ export type NewSharePointSource = Omit<StoredSharePointSource, "id" | "createdAt
 const STORE_KEY = "inventory:sharepoint-sources";
 
 /**
- * Reads whichever REST Redis credentials the current Vercel project
- * actually has, trying Upstash's own env var names first and falling
- * back to the KV_REST_API_* names the Vercel Marketplace "Upstash for
- * Redis" integration sets by default.
- */
-function getRedisCredentials(): { url: string; token: string } | null {
-  const url =
-    process.env.UPSTASH_REDIS_REST_URL ?? process.env.KV_REST_API_URL;
-  const token =
-    process.env.UPSTASH_REDIS_REST_TOKEN ?? process.env.KV_REST_API_TOKEN;
-  if (!url || !token) {
-    return null;
-  }
-  return { url, token };
-}
-
-function getRedis(): Redis | null {
-  const credentials = getRedisCredentials();
-  return credentials ? new Redis(credentials) : null;
-}
-
-/**
  * Whether a Redis store is reachable at all — the "Data sources" page
  * uses this to decide whether to show the add-source form or a note
- * pointing at Vercel's storage marketplace instead.
+ * pointing at Vercel's storage marketplace instead. Kept as its own
+ * export (rather than having callers import isRedisConfigured directly)
+ * so this module's public API didn't need to change when the
+ * credential lookup moved to lib/redis.ts.
  */
-export function isSourceStoreConfigured(): boolean {
-  return getRedisCredentials() !== null;
-}
+export const isSourceStoreConfigured = isRedisConfigured;
 
 /** Returns [] (never throws) when Redis isn't configured — same
  *  fail-open philosophy as readSharePointExcelConfig(): a missing store

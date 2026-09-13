@@ -36,7 +36,7 @@ export const viewport: Viewport = {
 
 export default async function RootLayout({ children }: LayoutProps<"/">) {
   const session = await getServerSession(authOptions);
-  const { parts, jobs, jobParts, warnings, sourceStatuses } = await loadInventory(
+  const { parts, jobs, jobParts, warnings, sourceStatuses, tags } = await loadInventory(
     session?.accessToken,
   );
 
@@ -51,6 +51,7 @@ export default async function RootLayout({ children }: LayoutProps<"/">) {
           initialJobs={jobs}
           initialJobParts={jobParts}
           initialSourceStatuses={sourceStatuses}
+          initialTags={tags}
         >
           <div className="mx-auto flex min-h-full w-full max-w-lg flex-col px-5 pb-24 pt-7 sm:px-7">
             {session?.user ? (
