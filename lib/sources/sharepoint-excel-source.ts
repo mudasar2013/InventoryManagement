@@ -30,9 +30,15 @@ export interface SharePointExcelConfig {
   /** Path to the workbook within the site's default document library,
    *  e.g. "Shared Documents/Inventory.xlsx" */
   filePath: string;
-  /** The Excel Table's name (Insert > Table, then name it in the Table
-   *  Design tab) — not the worksheet name. A named Table is what makes
-   *  this robust to inserted rows/columns; a plain cell range is not. */
+  /** Either an Excel Table's name (Insert > Table, then named in the
+   *  Table Design tab) or, when the workbook has no such Table, a
+   *  worksheet's tab name — createSharePointExcelSource tries the name
+   *  as a Table first and falls back to reading that worksheet's whole
+   *  used range if no Table by that name exists. A named Table is more
+   *  robust to inserted/removed rows, so it's worth converting a plain
+   *  sheet to one (select the data, Insert > Table) if you can — but
+   *  plenty of workbooks are just a sheet with headers in row 1, and
+   *  this reads those too rather than requiring the conversion. */
   tableName: string;
 }
 
@@ -54,15 +60,23 @@ export function readSharePointExcelConfig(): SharePointExcelConfig | null {
   return { siteHostname, sitePath, filePath, tableName };
 }
 
+function slugify(value: string): string {
+  return value
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/(^-|-$)/g, "");
+}
+
 /**
  * Runs one Graph call and, on failure, rethrows wrapped in a plain Error
  * naming what was being attempted — with the original error attached as
  * `.cause` so describeErrorDetail() still shows the full Graph SDK
  * detail (status code, error code, body). A bare "itemNotFound" is
- * ambiguous across three unrelated things this source looks up (the
- * site, the file, the table) — this turns it into "site lookup failed"
- * vs. "table lookup failed", which is the difference between checking
- * the hostname/site path and checking the file path/table name.
+ * ambiguous across several unrelated things this source looks up (the
+ * site, the table, the worksheet) — this turns it into "site lookup
+ * failed" vs. "reading the table's rows failed", which is the
+ * difference between checking the hostname/site path and checking the
+ * file path/table name.
  */
 async function runStep<T>(description: string, fn: () => Promise<T>): Promise<T> {
   try {
@@ -72,11 +86,86 @@ async function runStep<T>(description: string, fn: () => Promise<T>): Promise<T>
   }
 }
 
-function slugify(value: string): string {
-  return value
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, "-")
-    .replace(/(^-|-$)/g, "");
+/** True for the specific Graph error Microsoft returns when the thing
+ *  you asked for by name (a Table, a worksheet, ...) doesn't exist —
+ *  as opposed to a permissions error, a network failure, etc., which
+ *  should propagate rather than be treated as "try the next thing". */
+export function isItemNotFoundError(error: unknown): boolean {
+  return (
+    error !== null &&
+    typeof error === "object" &&
+    (error as { code?: string | null }).code === "itemNotFound"
+  );
+}
+
+/**
+ * Reads a workbook's data as headers + rows, trying an Excel Table
+ * first and falling back to a plain worksheet's used range if no Table
+ * by that name exists. Most shop inventory workbooks are just a sheet
+ * with headers in row 1 rather than a formally-named Table, and
+ * requiring the conversion before this source could read anything was
+ * a real usability wall — this tries the friendlier, more robust
+ * option first and quietly falls back rather than making the
+ * conversion a precondition.
+ */
+export async function readWorkbookData(
+  client: Client,
+  fileBase: string,
+  filePath: string,
+  tableOrWorksheetName: string,
+): Promise<{ headers: string[]; rows: unknown[][] }> {
+  const tableBase = `${fileBase}/tables/${encodeURIComponent(tableOrWorksheetName)}`;
+
+  let tableExists: boolean;
+  try {
+    await client.api(tableBase).get();
+    tableExists = true;
+  } catch (error) {
+    if (!isItemNotFoundError(error)) {
+      throw new Error(`Looking up Excel Table "${tableOrWorksheetName}" failed`, {
+        cause: error,
+      });
+    }
+    tableExists = false;
+  }
+
+  if (tableExists) {
+    const [headerRange, rowsResponse] = await Promise.all([
+      runStep(`Reading Table "${tableOrWorksheetName}"'s header row failed`, () =>
+        client.api(`${tableBase}/headerRowRange`).get(),
+      ),
+      runStep(`Reading Table "${tableOrWorksheetName}"'s rows failed`, () =>
+        client.api(`${tableBase}/rows`).get(),
+      ),
+    ]);
+    return {
+      headers: (headerRange.values?.[0] ?? []).map((value: unknown) => String(value)),
+      rows: (rowsResponse.value ?? []).map((row: { values: unknown[][] }) => row.values[0]),
+    };
+  }
+
+  // No Excel Table by that name — try it as a worksheet tab name
+  // instead, reading every used cell directly (row 1 is assumed to be
+  // headers, same as the Table path). A wrong "File path" 404s at
+  // exactly this same step (the path never resolved to begin with), so
+  // the hint below covers both possibilities rather than assuming this
+  // one always means the table/worksheet name is what's wrong.
+  const usedRange = await runStep(
+    `Reading worksheet "${tableOrWorksheetName}" failed — check the "File path" ` +
+      `("${filePath}") is correct, and that "Table name" on the Data sources page ` +
+      `matches either an actual Excel Table name (Insert > Table, named in the Table ` +
+      `Design tab) or a worksheet tab name at the bottom of Excel`,
+    () =>
+      client
+        .api(`${fileBase}/worksheets/${encodeURIComponent(tableOrWorksheetName)}/usedRange`)
+        .get(),
+  );
+
+  const values: unknown[][] = usedRange.values ?? [];
+  return {
+    headers: (values[0] ?? []).map((value: unknown) => String(value)),
+    rows: values.slice(1),
+  };
 }
 
 /**
@@ -153,38 +242,17 @@ export function createSharePointExcelSource(
     label: identity?.label ?? `SharePoint workbook (${config.filePath})`,
     async fetchParts(): Promise<RawPart[]> {
       const site = await runStep(
-        `Site lookup failed for "${config.siteHostname}${config.sitePath}" — check ` +
-          `the "Site hostname" and "Site path" fields on the Data sources page`,
+        `Site lookup failed for "${config.siteHostname}${config.sitePath}" — check the ` +
+          `"Site hostname" and "Site path" fields on the Data sources page`,
         () => client.api(`/sites/${config.siteHostname}:${config.sitePath}`).get(),
       );
 
-      const workbookBase = `/sites/${site.id}/drive/root:/${encodeURI(
+      const fileBase = `/sites/${site.id}/drive/root:/${encodeURI(config.filePath)}:/workbook`;
+      const { headers, rows } = await readWorkbookData(
+        client,
+        fileBase,
         config.filePath,
-      )}:/workbook/tables/${encodeURIComponent(config.tableName)}`;
-
-      const workbookNotFoundHint =
-        `check the "File path" ("${config.filePath}") is the file's path within the ` +
-        `site's default document library (not including the library name itself, ` +
-        `e.g. "Shared Documents/"), and that "Table name" ("${config.tableName}") is an ` +
-        `actual Excel Table name (Insert > Table, named in the Table Design tab) — not ` +
-        `the worksheet name`;
-
-      const [headerRange, rowsResponse] = await Promise.all([
-        runStep(
-          `Reading the table's header row failed — ${workbookNotFoundHint}`,
-          () => client.api(`${workbookBase}/headerRowRange`).get(),
-        ),
-        runStep(
-          `Reading the table's rows failed — ${workbookNotFoundHint}`,
-          () => client.api(`${workbookBase}/rows`).get(),
-        ),
-      ]);
-
-      const headers: string[] = (headerRange.values?.[0] ?? []).map((value: unknown) =>
-        String(value),
-      );
-      const rows: unknown[][] = (rowsResponse.value ?? []).map(
-        (row: { values: unknown[][] }) => row.values[0],
+        config.tableName,
       );
 
       return mapTableRowsToRawParts(headers, rows);

@@ -97,7 +97,7 @@ async function buildSources(accessToken: string | undefined): Promise<{
     sharePointEntries.push({
       id,
       label: "SharePoint workbook (env)",
-      detail: `${envConfig.siteHostname}${envConfig.sitePath} · ${envConfig.filePath} (table: ${envConfig.tableName})`,
+      detail: `${envConfig.siteHostname}${envConfig.sitePath} · ${envConfig.filePath} (table/sheet: ${envConfig.tableName})`,
       removable: false,
     });
     priority.push(id);
@@ -118,7 +118,7 @@ async function buildSources(accessToken: string | undefined): Promise<{
     sharePointEntries.push({
       id: entry.id,
       label: entry.label,
-      detail: `${entry.siteHostname}${entry.sitePath} · ${entry.filePath} (table: ${entry.tableName})`,
+      detail: `${entry.siteHostname}${entry.sitePath} · ${entry.filePath} (table/sheet: ${entry.tableName})`,
       removable: true,
     });
     priority.push(entry.id);

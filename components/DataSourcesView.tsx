@@ -357,8 +357,8 @@ export function DataSourcesView({
                     onChange={(value) => setEditForm((f) => ({ ...f, filePath: value }))}
                   />
                   <Field
-                    label="Table name"
-                    placeholder="Parts"
+                    label="Table or sheet name"
+                    placeholder="Parts (or a worksheet tab name, e.g. Sheet1)"
                     value={editForm.tableName}
                     onChange={(value) => setEditForm((f) => ({ ...f, tableName: value }))}
                   />
