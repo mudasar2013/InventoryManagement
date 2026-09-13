@@ -66,6 +66,25 @@ export interface RawPart {
   extraFields?: ExtraFields;
 }
 
+/** Pulls a part's "UPN#" — the shop's own sequential internal number —
+ *  out of its extraFields, when this source has that column. Matches
+ *  "UPN", "UPN#", "upn #", etc., the same header pattern
+ *  sharepoint-excel-source.ts's findUpnHeader uses when auto-numbering a
+ *  new part. Lives here rather than in sharepoint-excel-source.ts so a
+ *  client component (PartCard, PartsExplorer) can read it without
+ *  pulling that server-only module (it imports the Graph SDK) into the
+ *  browser bundle. */
+export function upnFromExtraFields(extraFields?: ExtraFields): string | undefined {
+  if (!extraFields) return undefined;
+  for (const [header, field] of Object.entries(extraFields)) {
+    if (/^upn\s*#?$/i.test(header.trim())) {
+      const value = typeof field.value === "string" ? field.value.trim() : "";
+      return value || undefined;
+    }
+  }
+  return undefined;
+}
+
 export interface Part extends RawPart {
   status: PartStatus;
   /**

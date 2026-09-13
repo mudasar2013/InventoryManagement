@@ -1,6 +1,6 @@
-import { ChevronRight, MapPin, Package, Tag } from "lucide-react";
+import { ChevronRight, Hash, MapPin, Package, Tag } from "lucide-react";
 import Link from "next/link";
-import type { Part } from "@/lib/types";
+import { upnFromExtraFields, type Part } from "@/lib/types";
 import { PartStatusBadge } from "./StatusBadge";
 
 /** `disableLink` + `onClick` support the Parts page's bulk-select mode
@@ -17,6 +17,7 @@ export function PartCard({
   disableLink?: boolean;
   onClick?: () => void;
 }) {
+  const upn = upnFromExtraFields(part.extraFields);
   const content = (
     <>
       <div className="flex size-11 shrink-0 items-center justify-center rounded-xl bg-amber-50 text-amber-700">
@@ -36,6 +37,15 @@ export function PartCard({
         </div>
         <p className="mt-1 text-sm leading-5 text-stone-600">{part.description}</p>
         <dl className="mt-3 grid grid-cols-2 gap-2 text-xs">
+          {upn ? (
+            <div>
+              <dt className="font-semibold uppercase tracking-wide text-stone-500">UPN#</dt>
+              <dd className="mt-0.5 inline-flex items-center gap-1 font-medium text-stone-800">
+                <Hash className="size-3.5 text-amber-700" />
+                {upn}
+              </dd>
+            </div>
+          ) : null}
           <div>
             <dt className="font-semibold uppercase tracking-wide text-stone-500">
               Bin location
