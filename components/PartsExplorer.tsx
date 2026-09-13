@@ -75,6 +75,14 @@ export function PartsExplorer() {
     );
   }
 
+  /** Applies the typed query — from the Find button or Enter — to what
+   *  the list actually filters by. Pulled out to its own function (rather
+   *  than inlined on the button's onClick) so both trigger the exact same
+   *  update through the exact same code path. */
+  function handleFind() {
+    setAppliedQuery(query.trim());
+  }
+
   const searched = searchParts(parts, appliedQuery, filter);
   const visible = searched.filter((part) => {
     if (categoryFilter !== ALL && (part.category ?? "").trim() !== categoryFilter) return false;
@@ -148,19 +156,27 @@ export function PartsExplorer() {
         </div>
       </div>
 
-      <form
-        onSubmit={(event) => {
-          event.preventDefault();
-          setAppliedQuery(query.trim());
-        }}
-        className="flex gap-2"
-      >
+      {/* A plain <div>, deliberately not a <form> — a submit button inside
+          a <form> falls back to a native browser form submission (a full
+          navigation, wiping every bit of client state including the text
+          just typed) if anything ever stops the onSubmit handler's
+          preventDefault from running first. Enter-to-search below reaches
+          the same handleFind through a keydown check instead of relying on
+          form-submit semantics at all, so there's no native fallback path
+          to race against. */}
+      <div className="flex gap-2">
         <label className="relative block flex-1">
           <span className="sr-only">Search by part number</span>
           <Search className="pointer-events-none absolute left-3.5 top-1/2 size-4 -translate-y-1/2 text-stone-400" />
           <input
             value={query}
             onChange={(event) => setQuery(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === "Enter") {
+                event.preventDefault();
+                handleFind();
+              }
+            }}
             placeholder="Search by part number"
             inputMode="search"
             autoComplete="off"
@@ -182,13 +198,14 @@ export function PartsExplorer() {
           ) : null}
         </label>
         <button
-          type="submit"
+          type="button"
+          onClick={handleFind}
           className="inline-flex h-12 shrink-0 items-center gap-1.5 rounded-2xl bg-stone-900 px-4 text-sm font-semibold text-white"
         >
           <Search className="size-4" />
           Find
         </button>
-      </form>
+      </div>
       <p className="text-xs text-stone-500">
         Look up stock from the shelf — no job required. Type a part number and press Find (or
         Enter). Description and bin also match.
@@ -237,7 +254,15 @@ export function PartsExplorer() {
           </p>
         </div>
       ) : (
-        <ul className="space-y-3">
+        // Keyed by the search/filter combo that produced `visible`, so a
+        // new search always mounts a fresh list instead of patching the
+        // previous one in place — a defensive measure against this page
+        // occasionally leaving stale cards on screen after a search
+        // (see handleFind) rather than swapping in the new results.
+        <ul
+          key={`${appliedQuery}|${filter}|${categoryFilter}|${locationFilter}|${tagFilter}`}
+          className="space-y-3"
+        >
           {visible.map((part) => (
             <li key={part.id} className="flex items-center gap-2">
               {selecting ? (
