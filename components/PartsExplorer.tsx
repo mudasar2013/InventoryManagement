@@ -1,6 +1,7 @@
 "use client";
 
-import { PackageSearch, Search, X } from "lucide-react";
+import { PackagePlus, PackageSearch, Search, X } from "lucide-react";
+import Link from "next/link";
 import { useState } from "react";
 import { LinkBanner } from "@/components/LinkBanner";
 import { PartCard } from "@/components/PartCard";
@@ -13,7 +14,7 @@ type Filter = "All" | PartStatus;
 const filters: Filter[] = ["All", "In Stock", "Low Stock", "Out of Stock"];
 
 export function PartsExplorer() {
-  const { parts } = useInventory();
+  const { parts, writableSources } = useInventory();
   const [query, setQuery] = useState("");
   const [filter, setFilter] = useState<Filter>("All");
   const counts = countByStatus(parts);
@@ -30,6 +31,16 @@ export function PartsExplorer() {
   return (
     <div className="space-y-4">
       <LinkBanner />
+
+      {writableSources.length > 0 ? (
+        <Link
+          href="/parts/new"
+          className="inline-flex items-center gap-1.5 text-sm font-semibold text-amber-700"
+        >
+          <PackagePlus className="size-4" />
+          Add a part
+        </Link>
+      ) : null}
 
       <label className="relative block">
         <span className="sr-only">Search by part number</span>

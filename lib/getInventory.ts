@@ -3,39 +3,13 @@ import { describeError, describeErrorDetail } from "./describe-error";
 import { localSource } from "./sources/local-source";
 import { mergeParts } from "./sources/merge";
 import {
-  createSharePointExcelSource,
-  readSharePointExcelConfig,
-} from "./sources/sharepoint-excel-source";
-import type { SharePointColumnMap } from "./sources/sharepoint-excel-source";
-import {
-  isSourceStoreConfigured,
-  listStoredSharePointSources,
-} from "./sources/sharepoint-source-store";
-import type { StoredSharePointSource } from "./sources/sharepoint-source-store";
+  columnMapForStoredSource,
+  ENV_SHAREPOINT_SOURCE_ID,
+} from "./sources/resolve-sharepoint-source";
+import { createSharePointExcelSource, readSharePointExcelConfig } from "./sources/sharepoint-excel-source";
+import { isSourceStoreConfigured, listStoredSharePointSources } from "./sources/sharepoint-source-store";
 import type { InventorySource } from "./sources/types";
 import type { Job, JobPart, Part } from "./types";
-
-/**
- * Builds this source's own column map from its stored per-source
- * header fields — see StoredSharePointSource.partNumberColumn etc.
- * Returns undefined (letting createSharePointExcelSource fall back to
- * the legacy default COLUMN_MAP) for a source added before per-source
- * column mapping existed, i.e. it has neither field set.
- */
-function columnMapForStoredSource(
-  entry: StoredSharePointSource,
-): SharePointColumnMap | undefined {
-  if (!entry.partNumberColumn && !entry.quantityColumn) {
-    return undefined;
-  }
-  return {
-    part_number: entry.partNumberColumn || "PartNumber",
-    quantity_on_hand: entry.quantityColumn || "QtyOnHand",
-    description: entry.descriptionColumn,
-    bin_location: entry.binLocationColumn,
-    id: entry.idColumn,
-  };
-}
 
 /**
  * Status of one configured (or configurable) inventory source, for the
@@ -73,6 +47,12 @@ export interface SourceStatus {
    *  than always-on, since it's meant for pinning down a typo'd
    *  hostname/path rather than everyday reading. See describeErrorDetail. */
   debugDetail?: string;
+  /** Browser URL for the underlying file, when known — see
+   *  InventorySource.getFileUrl. Populated once the site + file lookup
+   *  succeeds, even if the fetch goes on to fail on the table/worksheet
+   *  name, so a technician can open the file to check it regardless of
+   *  whether this request's fetch fully succeeded. */
+  fileUrl?: string;
   /** Whether this entry can be deleted from the "Data sources" page. The
    *  legacy env-var SharePoint source and the always-on local catalog are
    *  not — removing those means editing environment variables/code. */
@@ -117,7 +97,7 @@ async function buildSources(accessToken: string | undefined): Promise<{
   // the page, only by changing env vars and redeploying.
   const envConfig = readSharePointExcelConfig();
   if (envConfig) {
-    const id = "sharepoint-env";
+    const id = ENV_SHAREPOINT_SOURCE_ID;
     sharePointEntries.push({
       id,
       label: "SharePoint workbook (env)",
@@ -201,7 +181,19 @@ export const loadInventory = cache(
             source.fetchJobs(),
             source.fetchJobParts(),
           ]);
-          return { sourceId: source.id, parts, jobs, jobParts, ok: true as const };
+          return {
+            sourceId: source.id,
+            parts,
+            jobs,
+            jobParts,
+            ok: true as const,
+            // Some sources (SharePoint) resolve their underlying file
+            // before reading the table/worksheet — read this after the
+            // fetch either way, not just on success, so a technician
+            // can still open the file when the fetch fails later on a
+            // bad table/worksheet name (see the catch branch below).
+            fileUrl: source.getFileUrl?.(),
+          };
         } catch (error) {
           // Full detail (including nested .cause) goes to the server
           // terminal — the warning banner only gets a short phrase, and
@@ -221,6 +213,7 @@ export const loadInventory = cache(
             ok: false as const,
             note,
             debugDetail,
+            fileUrl: source.getFileUrl?.(),
           };
         }
       }),
@@ -260,6 +253,7 @@ export const loadInventory = cache(
               : result.note
             : "Signed-in session has no Microsoft access token yet — sign out and back in.",
           debugDetail: result && !result.ok ? result.debugDetail : undefined,
+          fileUrl: result?.fileUrl,
         };
       }),
     ];

@@ -1,0 +1,88 @@
+import type { PartFields } from "./sharepoint-excel-source";
+
+/**
+ * Fields a technician submits from the "Add a part" / "Edit part" forms
+ * (see components/AddPartForm.tsx and components/PartDetail.tsx),
+ * validated before either updatePartInWorkbook or addPartToWorkbook
+ * ever sees them. `sourceId` says which SharePoint workbook to write
+ * to; `existingPartNumber` is present only for an update (it's how the
+ * row to overwrite gets found — see parsePartUpdateInput) and absent
+ * for adding a brand-new part.
+ */
+export interface ParsedPartInput {
+  sourceId: string;
+  fields: PartFields;
+}
+
+export interface ParsedPartUpdateInput extends ParsedPartInput {
+  existingPartNumber: string;
+}
+
+/**
+ * Validates and normalizes a new-part submission. `part_number` and
+ * `sourceId` are required and non-blank; `quantity_on_hand` must be a
+ * finite number and is clamped to 0 if negative (a technician fat-
+ * fingering "-5" should not write a negative stock count); description
+ * and bin_location default to "" when omitted, matching how a source
+ * with no such column configured reads back (see mapTableRowsToRawParts).
+ */
+export function parsePartInput(body: unknown): { input: ParsedPartInput } | { error: string } {
+  if (!body || typeof body !== "object") {
+    return { error: "Invalid request body." };
+  }
+  const record = body as Record<string, unknown>;
+
+  if (typeof record.sourceId !== "string" || !record.sourceId.trim()) {
+    return { error: "Missing or empty field: sourceId" };
+  }
+  if (typeof record.part_number !== "string" || !record.part_number.trim()) {
+    return { error: "Missing or empty field: part_number" };
+  }
+  const quantity = Number(record.quantity_on_hand);
+  if (!Number.isFinite(quantity)) {
+    return { error: "quantity_on_hand must be a number." };
+  }
+
+  return {
+    input: {
+      sourceId: record.sourceId.trim(),
+      fields: {
+        part_number: record.part_number.trim(),
+        description: normalizeOptionalText(record.description),
+        bin_location: normalizeOptionalText(record.bin_location),
+        quantity_on_hand: Math.max(0, quantity),
+      },
+    },
+  };
+}
+
+/**
+ * Same validation as parsePartInput, plus a required
+ * `existingPartNumber` — the part number to locate and overwrite,
+ * which may differ from the new `part_number` when a technician is
+ * correcting a typo'd part number as part of the same edit.
+ */
+export function parsePartUpdateInput(
+  body: unknown,
+): { input: ParsedPartUpdateInput } | { error: string } {
+  const parsed = parsePartInput(body);
+  if ("error" in parsed) {
+    return parsed;
+  }
+
+  const record = body as Record<string, unknown>;
+  if (typeof record.existingPartNumber !== "string" || !record.existingPartNumber.trim()) {
+    return { error: "Missing or empty field: existingPartNumber" };
+  }
+
+  return {
+    input: {
+      ...parsed.input,
+      existingPartNumber: record.existingPartNumber.trim(),
+    },
+  };
+}
+
+function normalizeOptionalText(value: unknown): string {
+  return typeof value === "string" ? value.trim() : "";
+}

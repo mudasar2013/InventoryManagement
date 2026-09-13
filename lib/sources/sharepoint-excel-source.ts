@@ -93,6 +93,15 @@ export function readSharePointExcelConfig(): SharePointExcelConfig | null {
   return { siteHostname, sitePath, filePath, tableName };
 }
 
+/** Finds a header's column index by exact text match (after trimming),
+ *  or -1 when `header` is undefined (this field isn't mapped to any
+ *  column) or not found. Shared by the read path (mapTableRowsToRawParts)
+ *  and the write path (updatePartInWorkbook / addPartToWorkbook) so both
+ *  agree on what "this column isn't in the sheet" means. */
+function headerIndex(headers: string[], header: string | undefined): number {
+  return header === undefined ? -1 : headers.findIndex((h) => String(h).trim() === header);
+}
+
 function slugify(value: string): string {
   return value
     .toLowerCase()
@@ -158,28 +167,47 @@ function withoutDefaultLibraryPrefix(filePath: string): string | null {
   return rest.length > 0 ? rest : null;
 }
 
+/** The file's resolved drive-relative path, plus its real SharePoint
+ *  browser URL (the DriveItem's own `webUrl`, straight from Graph —
+ *  more reliable than hand-building one from siteHostname/sitePath/
+ *  filePath, since those don't by themselves tell you which library
+ *  folder name convention actually applies). `webUrl` is left
+ *  undefined on the rare response that omits it rather than failing
+ *  the whole lookup over a "nice to have" field. */
+export interface ResolvedFile {
+  path: string;
+  webUrl?: string;
+}
+
 /**
  * Confirms which of one or two candidate paths the workbook actually
  * lives at — the path as configured, and (when it starts with a default
  * library folder name) that same path with the folder name stripped —
- * and returns whichever one resolves. A wrong path shows up as
- * "itemNotFound" here just like a wrong table/worksheet name would
- * further in, so this runs first and gets its own clear error rather
- * than leaving the ambiguity to whatever fails next.
+ * and returns whichever one resolves, together with that file's real
+ * webUrl for "open this file" links (see createSharePointExcelSource's
+ * getFileUrl). A wrong path shows up as "itemNotFound" here just like a
+ * wrong table/worksheet name would further in, so this runs first and
+ * gets its own clear error rather than leaving the ambiguity to
+ * whatever fails next.
  */
 export async function resolveFilePath(
   client: Client,
   siteId: string,
   filePath: string,
-): Promise<string> {
+): Promise<ResolvedFile> {
   const stripped = withoutDefaultLibraryPrefix(filePath);
   const candidates = stripped ? [filePath, stripped] : [filePath];
 
   let lastError: unknown;
   for (const candidate of candidates) {
     try {
-      await client.api(`/sites/${siteId}/drive/root:/${encodeURI(candidate)}`).get();
-      return candidate;
+      const item = await client
+        .api(`/sites/${siteId}/drive/root:/${encodeURI(candidate)}`)
+        .get();
+      return {
+        path: candidate,
+        webUrl: typeof item?.webUrl === "string" ? item.webUrl : undefined,
+      };
     } catch (error) {
       if (!isItemNotFoundError(error)) {
         throw new Error(`Looking up file "${candidate}" failed`, { cause: error });
@@ -196,6 +224,29 @@ export async function resolveFilePath(
       `"Shared Documents" / "Documents", is not part of that path)`,
     { cause: lastError },
   );
+}
+
+/** Checks whether an Excel Table by this name exists at `tableBase`,
+ *  without throwing for the "it just doesn't exist" case — used by both
+ *  the read path (readWorkbookData) and the write path
+ *  (updatePartInWorkbook / addPartToWorkbook) to decide whether to use
+ *  the Table APIs or fall back to a plain worksheet. */
+async function probeTableExists(
+  client: Client,
+  tableBase: string,
+  tableOrWorksheetName: string,
+): Promise<boolean> {
+  try {
+    await client.api(tableBase).get();
+    return true;
+  } catch (error) {
+    if (!isItemNotFoundError(error)) {
+      throw new Error(`Looking up Excel Table "${tableOrWorksheetName}" failed`, {
+        cause: error,
+      });
+    }
+    return false;
+  }
 }
 
 /**
@@ -215,19 +266,7 @@ export async function readWorkbookData(
   tableOrWorksheetName: string,
 ): Promise<{ headers: string[]; rows: unknown[][] }> {
   const tableBase = `${fileBase}/tables/${encodeURIComponent(tableOrWorksheetName)}`;
-
-  let tableExists: boolean;
-  try {
-    await client.api(tableBase).get();
-    tableExists = true;
-  } catch (error) {
-    if (!isItemNotFoundError(error)) {
-      throw new Error(`Looking up Excel Table "${tableOrWorksheetName}" failed`, {
-        cause: error,
-      });
-    }
-    tableExists = false;
-  }
+  const tableExists = await probeTableExists(client, tableBase, tableOrWorksheetName);
 
   if (tableExists) {
     const [headerRange, rowsResponse] = await Promise.all([
@@ -280,14 +319,11 @@ export function mapTableRowsToRawParts(
   rows: unknown[][],
   columnMap: SharePointColumnMap = COLUMN_MAP,
 ): RawPart[] {
-  const indexOf = (header: string | undefined) =>
-    header === undefined ? -1 : headers.findIndex((h) => String(h).trim() === header);
-
-  const partNumberIdx = indexOf(columnMap.part_number);
-  const descriptionIdx = indexOf(columnMap.description);
-  const binLocationIdx = indexOf(columnMap.bin_location);
-  const quantityIdx = indexOf(columnMap.quantity_on_hand);
-  const idIdx = indexOf(columnMap.id);
+  const partNumberIdx = headerIndex(headers, columnMap.part_number);
+  const descriptionIdx = headerIndex(headers, columnMap.description);
+  const binLocationIdx = headerIndex(headers, columnMap.bin_location);
+  const quantityIdx = headerIndex(headers, columnMap.quantity_on_hand);
+  const idIdx = headerIndex(headers, columnMap.id);
 
   if (partNumberIdx === -1 || quantityIdx === -1) {
     throw new Error(
@@ -315,6 +351,280 @@ export function mapTableRowsToRawParts(
 }
 
 /**
+ * Resolves a config down to a ready-to-use Graph client and the
+ * `.../workbook` API base for its file — the site lookup + file-path
+ * resolution (see resolveFilePath) that both reading and writing need
+ * before they can do anything else. Shared so the write path
+ * (updatePartInWorkbook / addPartToWorkbook, called from the "add/edit
+ * a part" API routes) doesn't re-implement the same site/path
+ * resolution createSharePointExcelSource's fetchParts already does.
+ */
+export async function connectToWorkbook(
+  accessToken: string,
+  config: SharePointExcelConfig,
+): Promise<{ client: Client; fileBase: string; filePath: string; fileUrl?: string }> {
+  const client = Client.init({
+    authProvider: (done) => done(null, accessToken),
+  });
+
+  const site = await runStep(
+    `Site lookup failed for "${config.siteHostname}${config.sitePath}" — either the ` +
+      `"Site hostname"/"Site path" fields on the Data sources page are wrong, or (with ` +
+      `Sites.Selected permissions) this app hasn't been granted access to this specific ` +
+      `site yet — see the README's "Sign-in setup" section for the ` +
+      `Grant-PnPAzureADAppSitePermission command`,
+    () => client.api(`/sites/${config.siteHostname}:${config.sitePath}`).get(),
+  );
+
+  const resolved = await resolveFilePath(client, site.id, config.filePath);
+  return {
+    client,
+    fileBase: `/sites/${site.id}/drive/root:/${encodeURI(resolved.path)}:/workbook`,
+    filePath: resolved.path,
+    fileUrl: resolved.webUrl,
+  };
+}
+
+/** The part fields a technician can edit or supply for a new part —
+ *  everything RawPart carries except `id`, which is either read from a
+ *  sheet's own id column or synthesized from part_number, never
+ *  user-entered directly. */
+export type PartFields = Omit<RawPart, "id">;
+
+/** Converts a 0-based column index to spreadsheet column letters
+ *  (0 -> "A", 25 -> "Z", 26 -> "AA", ...) — used to address a single
+ *  cell by A1 notation when writing to a plain worksheet, since a
+ *  source's mapped columns (part number, quantity, ...) are frequently
+ *  scattered rather than contiguous and can't be written as one range. */
+function columnIndexToLetters(index: number): string {
+  let n = index;
+  let letters = "";
+  do {
+    letters = String.fromCharCode(65 + (n % 26)) + letters;
+    n = Math.floor(n / 26) - 1;
+  } while (n >= 0);
+  return letters;
+}
+
+/** Overwrites the mapped cells of an existing row array in place —
+ *  shared by the Table update and Table add-row paths, both of which
+ *  work with a full-width row array matching the table's own header
+ *  order. Fields with no configured column are left untouched (nothing
+ *  in the sheet to put them in). */
+function applyFieldsToRow(
+  row: unknown[],
+  headers: string[],
+  columnMap: SharePointColumnMap,
+  fields: PartFields,
+): void {
+  const assignments: [string | undefined, unknown][] = [
+    [columnMap.part_number, fields.part_number],
+    [columnMap.description, fields.description],
+    [columnMap.bin_location, fields.bin_location],
+    [columnMap.quantity_on_hand, fields.quantity_on_hand],
+  ];
+  for (const [header, value] of assignments) {
+    const idx = headerIndex(headers, header);
+    if (idx !== -1) {
+      row[idx] = value;
+    }
+  }
+}
+
+/** Writes each mapped field to its own single-cell range in a plain
+ *  worksheet (no Table) — one Graph call per configured field, rather
+ *  than one range covering the whole row, because a source's mapped
+ *  columns are frequently scattered across the sheet rather than
+ *  contiguous (see the "Test Data" source this was built for: PartName,
+ *  PartNumber and Quantity aren't next to each other). Fields with no
+ *  configured column are skipped — nowhere in the sheet to write them. */
+async function writeFieldsToWorksheetRow(
+  client: Client,
+  worksheetBase: string,
+  worksheetName: string,
+  headers: string[],
+  startColumn0: number,
+  rowIndex0: number,
+  columnMap: SharePointColumnMap,
+  fields: PartFields,
+): Promise<void> {
+  const assignments: [string | undefined, unknown][] = [
+    [columnMap.part_number, fields.part_number],
+    [columnMap.description, fields.description],
+    [columnMap.bin_location, fields.bin_location],
+    [columnMap.quantity_on_hand, fields.quantity_on_hand],
+  ];
+
+  for (const [header, value] of assignments) {
+    const colIdx = headerIndex(headers, header);
+    if (colIdx === -1) {
+      continue;
+    }
+    const address = `${columnIndexToLetters(startColumn0 + colIdx)}${rowIndex0 + 1}`;
+    await runStep(`Writing "${header}" to worksheet "${worksheetName}" failed`, () =>
+      client
+        .api(`${worksheetBase}/range(address='${address}')`)
+        .patch({ values: [[value]] }),
+    );
+  }
+}
+
+/**
+ * Updates the row for `existingPartNumber` in place — an Excel Table
+ * row via a single PATCH covering the whole (table-relative, so always
+ * contiguous) row, or a plain worksheet's scattered columns one cell at
+ * a time (see writeFieldsToWorksheetRow). Throws a clear error if no
+ * row with that part number is found, or if the part-number column
+ * itself isn't configured/found (there'd be nothing to match against).
+ */
+export async function updatePartInWorkbook(
+  client: Client,
+  fileBase: string,
+  tableOrWorksheetName: string,
+  columnMap: SharePointColumnMap,
+  existingPartNumber: string,
+  fields: PartFields,
+): Promise<void> {
+  const tableBase = `${fileBase}/tables/${encodeURIComponent(tableOrWorksheetName)}`;
+  const tableExists = await probeTableExists(client, tableBase, tableOrWorksheetName);
+
+  if (tableExists) {
+    const headerRange = await runStep(
+      `Reading Table "${tableOrWorksheetName}"'s header row failed`,
+      () => client.api(`${tableBase}/headerRowRange`).get(),
+    );
+    const headers: string[] = (headerRange.values?.[0] ?? []).map((v: unknown) => String(v));
+    const partNumberIdx = headerIndex(headers, columnMap.part_number);
+    if (partNumberIdx === -1) {
+      throw new Error(
+        `Can't update this part: no "${columnMap.part_number}" column found in Table ` +
+          `"${tableOrWorksheetName}".`,
+      );
+    }
+
+    const rowsResponse = await runStep(
+      `Reading Table "${tableOrWorksheetName}"'s rows failed`,
+      () => client.api(`${tableBase}/rows`).get(),
+    );
+    const tableRows: { index: number; values: unknown[][] }[] = rowsResponse.value ?? [];
+    const match = tableRows.find(
+      (row) => String(row.values[0]?.[partNumberIdx] ?? "").trim() === existingPartNumber,
+    );
+    if (!match) {
+      throw new Error(
+        `Can't update this part: no row with part number "${existingPartNumber}" found ` +
+          `in Table "${tableOrWorksheetName}".`,
+      );
+    }
+
+    const newValues = [...match.values[0]];
+    applyFieldsToRow(newValues, headers, columnMap, fields);
+
+    await runStep(
+      `Writing the updated row for "${existingPartNumber}" failed`,
+      () => client.api(`${tableBase}/rows/itemAt(index=${match.index})`).patch({
+        values: [newValues],
+      }),
+    );
+    return;
+  }
+
+  const worksheetBase = `${fileBase}/worksheets/${encodeURIComponent(tableOrWorksheetName)}`;
+  const usedRange = await runStep(
+    `Reading worksheet "${tableOrWorksheetName}" failed`,
+    () => client.api(`${worksheetBase}/usedRange`).get(),
+  );
+  const values: unknown[][] = usedRange.values ?? [];
+  const headers = (values[0] ?? []).map((v: unknown) => String(v));
+  const partNumberIdx = headerIndex(headers, columnMap.part_number);
+  if (partNumberIdx === -1) {
+    throw new Error(
+      `Can't update this part: no "${columnMap.part_number}" column found in worksheet ` +
+        `"${tableOrWorksheetName}".`,
+    );
+  }
+
+  const dataRows = values.slice(1);
+  const matchOffset = dataRows.findIndex(
+    (row) => String(row[partNumberIdx] ?? "").trim() === existingPartNumber,
+  );
+  if (matchOffset === -1) {
+    throw new Error(
+      `Can't update this part: no row with part number "${existingPartNumber}" found in ` +
+        `worksheet "${tableOrWorksheetName}".`,
+    );
+  }
+
+  const startColumn0: number = usedRange.columnIndex ?? 0;
+  const rowIndex0: number = (usedRange.rowIndex ?? 0) + 1 + matchOffset; // +1 skips the header row
+
+  await writeFieldsToWorksheetRow(
+    client,
+    worksheetBase,
+    tableOrWorksheetName,
+    headers,
+    startColumn0,
+    rowIndex0,
+    columnMap,
+    fields,
+  );
+}
+
+/**
+ * Adds a brand-new row to the workbook — appended to the Excel Table
+ * (via the Table "add row" API, so it becomes part of the Table just
+ * like a row typed in by hand) or written just past the current used
+ * range for a plain worksheet.
+ */
+export async function addPartToWorkbook(
+  client: Client,
+  fileBase: string,
+  tableOrWorksheetName: string,
+  columnMap: SharePointColumnMap,
+  fields: PartFields,
+): Promise<void> {
+  const tableBase = `${fileBase}/tables/${encodeURIComponent(tableOrWorksheetName)}`;
+  const tableExists = await probeTableExists(client, tableBase, tableOrWorksheetName);
+
+  if (tableExists) {
+    const headerRange = await runStep(
+      `Reading Table "${tableOrWorksheetName}"'s header row failed`,
+      () => client.api(`${tableBase}/headerRowRange`).get(),
+    );
+    const headers: string[] = (headerRange.values?.[0] ?? []).map((v: unknown) => String(v));
+    const newRow: unknown[] = headers.map(() => "");
+    applyFieldsToRow(newRow, headers, columnMap, fields);
+
+    await runStep(
+      `Adding a new row to Table "${tableOrWorksheetName}" failed`,
+      () => client.api(`${tableBase}/rows/add`).post({ values: [newRow] }),
+    );
+    return;
+  }
+
+  const worksheetBase = `${fileBase}/worksheets/${encodeURIComponent(tableOrWorksheetName)}`;
+  const usedRange = await runStep(
+    `Reading worksheet "${tableOrWorksheetName}" failed`,
+    () => client.api(`${worksheetBase}/usedRange`).get(),
+  );
+  const values: unknown[][] = usedRange.values ?? [];
+  const headers = (values[0] ?? []).map((v: unknown) => String(v));
+  const startColumn0: number = usedRange.columnIndex ?? 0;
+  const newRowIndex0: number = (usedRange.rowIndex ?? 0) + values.length;
+
+  await writeFieldsToWorksheetRow(
+    client,
+    worksheetBase,
+    tableOrWorksheetName,
+    headers,
+    startColumn0,
+    newRowIndex0,
+    columnMap,
+    fields,
+  );
+}
+
+/**
  * Reads parts from an Excel workbook table via Microsoft Graph, using
  * the signed-in technician's own delegated access token (see
  * lib/auth/options.ts) — this source can only see what that person can
@@ -333,30 +643,28 @@ export function createSharePointExcelSource(
   config: SharePointExcelConfig,
   identity?: { id?: string; label?: string },
 ): InventorySource {
-  const client = Client.init({
-    authProvider: (done) => done(null, accessToken),
-  });
+  // Populated by fetchParts() once the site + file lookups succeed —
+  // which happens before the table/worksheet is even read, so this is
+  // available for "open this file" links even when the fetch goes on
+  // to fail on a bad table/worksheet name. Stays undefined until
+  // fetchParts() has actually run at least once this request.
+  let resolvedFileUrl: string | undefined;
 
   return {
     id: identity?.id ?? "sharepoint",
     label: identity?.label ?? `SharePoint workbook (${config.filePath})`,
     async fetchParts(): Promise<RawPart[]> {
-      const site = await runStep(
-        `Site lookup failed for "${config.siteHostname}${config.sitePath}" — check the ` +
-          `"Site hostname" and "Site path" fields on the Data sources page`,
-        () => client.api(`/sites/${config.siteHostname}:${config.sitePath}`).get(),
+      const { client, fileBase, filePath, fileUrl } = await connectToWorkbook(
+        accessToken,
+        config,
       );
-
-      const resolvedFilePath = await resolveFilePath(client, site.id, config.filePath);
-      const fileBase = `/sites/${site.id}/drive/root:/${encodeURI(resolvedFilePath)}:/workbook`;
-      const { headers, rows } = await readWorkbookData(
-        client,
-        fileBase,
-        resolvedFilePath,
-        config.tableName,
-      );
+      resolvedFileUrl = fileUrl;
+      const { headers, rows } = await readWorkbookData(client, fileBase, filePath, config.tableName);
 
       return mapTableRowsToRawParts(headers, rows, config.columnMap ?? COLUMN_MAP);
+    },
+    getFileUrl() {
+      return resolvedFileUrl;
     },
     // The workbook is inventory only — jobs and job/part links still come
     // from the local source until there's a real job system to read.

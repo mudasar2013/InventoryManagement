@@ -17,4 +17,11 @@ export interface InventorySource {
   fetchParts(): Promise<RawPart[]>;
   fetchJobs(): Promise<Job[]>;
   fetchJobParts(): Promise<JobPart[]>;
+  /** A browser URL for the underlying file/sheet this source reads
+   *  from, e.g. so a technician can open a SharePoint workbook directly
+   *  to make a change by hand — see the "Data sources" page. Optional:
+   *  not every source has an underlying file (the local catalog
+   *  doesn't), and for those that do it may only be known after
+   *  fetchParts() has run at least once this request. */
+  getFileUrl?(): string | undefined;
 }

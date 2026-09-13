@@ -2,11 +2,14 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { Client } from "@microsoft/microsoft-graph-client";
 import {
+  addPartToWorkbook,
   isItemNotFoundError,
   mapTableRowsToRawParts,
   readWorkbookData,
   resolveFilePath,
+  updatePartInWorkbook,
 } from "./sharepoint-excel-source";
+import type { PartFields, SharePointColumnMap } from "./sharepoint-excel-source";
 
 /**
  * A minimal stand-in for the Graph SDK's Client — readWorkbookData only
@@ -26,6 +29,42 @@ function fakeClient(handlers: Record<string, () => Promise<unknown>>): Client {
       },
     }),
   } as unknown as Client;
+}
+
+/**
+ * Like fakeClient, but also records PATCH/POST calls so a write-path
+ * test can assert exactly which cell/row was written and with what
+ * body, without a live SharePoint connection. GET handlers are plain
+ * `() => Promise<unknown>` (same as fakeClient); PATCH/POST handlers
+ * receive the request body and default to `async () => ({})` when not
+ * given, since most write tests only care that the right call was
+ * made, not what it returns.
+ */
+function fakeWriteClient(
+  getHandlers: Record<string, () => Promise<unknown>>,
+): { client: Client; patches: { path: string; body: unknown }[]; posts: { path: string; body: unknown }[] } {
+  const patches: { path: string; body: unknown }[] = [];
+  const posts: { path: string; body: unknown }[] = [];
+  const client = {
+    api: (path: string) => ({
+      get: () => {
+        const handler = getHandlers[path];
+        if (!handler) {
+          throw new Error(`Test fake received an unexpected GET: ${path}`);
+        }
+        return handler();
+      },
+      patch: (body: unknown) => {
+        patches.push({ path, body });
+        return Promise.resolve({});
+      },
+      post: (body: unknown) => {
+        posts.push({ path, body });
+        return Promise.resolve({});
+      },
+    }),
+  } as unknown as Client;
+  return { client, patches, posts };
 }
 
 function itemNotFoundError(): Error {
@@ -231,14 +270,18 @@ test("readWorkbookData: names both the file path and the table/worksheet name wh
   );
 });
 
-test("resolveFilePath: resolves as-is when the path already works", async () => {
+test("resolveFilePath: resolves as-is when the path already works, and returns the item's webUrl", async () => {
   const client = fakeClient({
-    "/sites/site-id/drive/root:/Inventory.xlsx": async () => ({ id: "item-1" }),
+    "/sites/site-id/drive/root:/Inventory.xlsx": async () => ({
+      id: "item-1",
+      webUrl: "https://contoso.sharepoint.com/sites/Foo/Inventory.xlsx",
+    }),
   });
 
   const resolved = await resolveFilePath(client, "site-id", "Inventory.xlsx");
 
-  assert.equal(resolved, "Inventory.xlsx");
+  assert.equal(resolved.path, "Inventory.xlsx");
+  assert.equal(resolved.webUrl, "https://contoso.sharepoint.com/sites/Foo/Inventory.xlsx");
 });
 
 test("resolveFilePath: falls back to stripping a leading \"Shared Documents/\" when the path as given 404s", async () => {
@@ -251,7 +294,7 @@ test("resolveFilePath: falls back to stripping a leading \"Shared Documents/\" w
 
   const resolved = await resolveFilePath(client, "site-id", "Shared Documents/Inventory.xlsx");
 
-  assert.equal(resolved, "Inventory.xlsx");
+  assert.equal(resolved.path, "Inventory.xlsx");
 });
 
 test("resolveFilePath: falls back to stripping a leading \"Documents/\" when the path as given 404s", async () => {
@@ -264,7 +307,17 @@ test("resolveFilePath: falls back to stripping a leading \"Documents/\" when the
 
   const resolved = await resolveFilePath(client, "site-id", "Documents/Inventory.xlsx");
 
-  assert.equal(resolved, "Inventory.xlsx");
+  assert.equal(resolved.path, "Inventory.xlsx");
+});
+
+test("resolveFilePath: leaves webUrl undefined when the resolved item's response doesn't include one", async () => {
+  const client = fakeClient({
+    "/sites/site-id/drive/root:/Inventory.xlsx": async () => ({ id: "item-1" }),
+  });
+
+  const resolved = await resolveFilePath(client, "site-id", "Inventory.xlsx");
+
+  assert.equal(resolved.webUrl, undefined);
 });
 
 test("resolveFilePath: names both candidates it tried when neither resolves", async () => {
@@ -322,4 +375,200 @@ test("resolveFilePath: a path with no library-name prefix has only one candidate
       return true;
     },
   );
+});
+
+const tableColumnMap: SharePointColumnMap = {
+  part_number: "PartNumber",
+  quantity_on_hand: "QtyOnHand",
+};
+
+const scatteredColumnMap: SharePointColumnMap = {
+  part_number: "PartNumber",
+  quantity_on_hand: "Quantity",
+  description: "PartName",
+  bin_location: "Location",
+};
+
+test("updatePartInWorkbook: Table path PATCHes the matched row, updating only mapped columns", async () => {
+  const fileBase = "/sites/site-id/drive/root:/Inventory.xlsx:/workbook";
+  const tableBase = `${fileBase}/tables/Parts`;
+  const { client, patches } = fakeWriteClient({
+    [tableBase]: async () => ({ id: "table-1" }),
+    [`${tableBase}/headerRowRange`]: async () => ({
+      values: [["PartNumber", "QtyOnHand", "Extra"]],
+    }),
+    [`${tableBase}/rows`]: async () => ({
+      value: [
+        { index: 0, values: [["OLD123", 3, "keep-me"]] },
+        { index: 1, values: [["WR17X11705", 5, "other"]] },
+      ],
+    }),
+  });
+
+  const fields: PartFields = {
+    part_number: "WR17X11705",
+    description: "",
+    bin_location: "",
+    quantity_on_hand: 9,
+  };
+  await updatePartInWorkbook(client, fileBase, "Parts", tableColumnMap, "WR17X11705", fields);
+
+  assert.equal(patches.length, 1);
+  assert.equal(patches[0].path, `${tableBase}/rows/itemAt(index=1)`);
+  assert.deepEqual(patches[0].body, { values: [["WR17X11705", 9, "other"]] });
+});
+
+test("updatePartInWorkbook: Table path throws a clear error when no row matches the part number", async () => {
+  const fileBase = "/sites/site-id/drive/root:/Inventory.xlsx:/workbook";
+  const tableBase = `${fileBase}/tables/Parts`;
+  const { client } = fakeWriteClient({
+    [tableBase]: async () => ({ id: "table-1" }),
+    [`${tableBase}/headerRowRange`]: async () => ({ values: [["PartNumber", "QtyOnHand"]] }),
+    [`${tableBase}/rows`]: async () => ({ value: [{ index: 0, values: [["OLD123", 3]] }] }),
+  });
+
+  await assert.rejects(
+    () =>
+      updatePartInWorkbook(client, fileBase, "Parts", tableColumnMap, "WR17X11705", {
+        part_number: "WR17X11705",
+        description: "",
+        bin_location: "",
+        quantity_on_hand: 9,
+      }),
+    /no row with part number "WR17X11705"/,
+  );
+});
+
+test("updatePartInWorkbook: worksheet path writes each mapped, scattered column as its own cell PATCH", async () => {
+  const fileBase = "/sites/site-id/drive/root:/Inventory.xlsx:/workbook";
+  const tableBase = `${fileBase}/tables/Sheet1`;
+  const worksheetBase = `${fileBase}/worksheets/Sheet1`;
+  const { client, patches } = fakeWriteClient({
+    [tableBase]: async () => {
+      throw itemNotFoundError();
+    },
+    [`${worksheetBase}/usedRange`]: async () => ({
+      rowIndex: 2,
+      columnIndex: 1,
+      values: [
+        ["Location", "PartName", "PartNumber", "Quantity"],
+        ["A-1", "Water filter", "OLD999", 3],
+        ["A-2", "Ice maker valve", "WR17X11705", 5],
+      ],
+    }),
+  });
+
+  const fields: PartFields = {
+    part_number: "WR17X11705",
+    description: "New desc",
+    bin_location: "A-9",
+    quantity_on_hand: 12,
+  };
+  await updatePartInWorkbook(
+    client,
+    fileBase,
+    "Sheet1",
+    scatteredColumnMap,
+    "WR17X11705",
+    fields,
+  );
+
+  // usedRange starts at 0-based row 2 (row 3), column 1 (column B); the
+  // matched data row is the second one (0-based offset 1) — so absolute
+  // row = 2 + 1 (header) + 1 (offset) = 4 (0-based) = row 5. Headers are
+  // Location(B), PartName(C), PartNumber(D), Quantity(E) in that column
+  // order, so each field lands on its own row-5 cell.
+  const byAddress = new Map(
+    patches.map((p) => [p.path, (p.body as { values: unknown[][] }).values[0][0]]),
+  );
+  assert.equal(byAddress.get(`${worksheetBase}/range(address='D5')`), "WR17X11705");
+  assert.equal(byAddress.get(`${worksheetBase}/range(address='C5')`), "New desc");
+  assert.equal(byAddress.get(`${worksheetBase}/range(address='B5')`), "A-9");
+  assert.equal(byAddress.get(`${worksheetBase}/range(address='E5')`), 12);
+  assert.equal(patches.length, 4);
+});
+
+test("updatePartInWorkbook: worksheet path throws a clear error when no row matches the part number", async () => {
+  const fileBase = "/sites/site-id/drive/root:/Inventory.xlsx:/workbook";
+  const tableBase = `${fileBase}/tables/Sheet1`;
+  const worksheetBase = `${fileBase}/worksheets/Sheet1`;
+  const { client } = fakeWriteClient({
+    [tableBase]: async () => {
+      throw itemNotFoundError();
+    },
+    [`${worksheetBase}/usedRange`]: async () => ({
+      rowIndex: 0,
+      columnIndex: 0,
+      values: [
+        ["PartNumber", "Quantity"],
+        ["OLD999", 3],
+      ],
+    }),
+  });
+
+  await assert.rejects(
+    () =>
+      updatePartInWorkbook(client, fileBase, "Sheet1", scatteredColumnMap, "WR17X11705", {
+        part_number: "WR17X11705",
+        description: "",
+        bin_location: "",
+        quantity_on_hand: 12,
+      }),
+    /no row with part number "WR17X11705"/,
+  );
+});
+
+test("addPartToWorkbook: Table path POSTs a full-width row with mapped fields placed and everything else blank", async () => {
+  const fileBase = "/sites/site-id/drive/root:/Inventory.xlsx:/workbook";
+  const tableBase = `${fileBase}/tables/Parts`;
+  const { client, posts } = fakeWriteClient({
+    [tableBase]: async () => ({ id: "table-1" }),
+    [`${tableBase}/headerRowRange`]: async () => ({
+      values: [["PartNumber", "QtyOnHand", "Extra"]],
+    }),
+  });
+
+  await addPartToWorkbook(client, fileBase, "Parts", tableColumnMap, {
+    part_number: "NEW123",
+    description: "",
+    bin_location: "",
+    quantity_on_hand: 4,
+  });
+
+  assert.equal(posts.length, 1);
+  assert.equal(posts[0].path, `${tableBase}/rows/add`);
+  assert.deepEqual(posts[0].body, { values: [["NEW123", 4, ""]] });
+});
+
+test("addPartToWorkbook: worksheet path writes a new row just past the current used range", async () => {
+  const fileBase = "/sites/site-id/drive/root:/Inventory.xlsx:/workbook";
+  const tableBase = `${fileBase}/tables/Sheet1`;
+  const worksheetBase = `${fileBase}/worksheets/Sheet1`;
+  const { client, patches } = fakeWriteClient({
+    [tableBase]: async () => {
+      throw itemNotFoundError();
+    },
+    [`${worksheetBase}/usedRange`]: async () => ({
+      rowIndex: 0,
+      columnIndex: 0,
+      values: [
+        ["PartNumber", "QtyOnHand"],
+        ["OLD1", 3],
+      ],
+    }),
+  });
+
+  await addPartToWorkbook(client, fileBase, "Sheet1", tableColumnMap, {
+    part_number: "NEW123",
+    description: "",
+    bin_location: "",
+    quantity_on_hand: 4,
+  });
+
+  const byAddress = new Map(
+    patches.map((p) => [p.path, (p.body as { values: unknown[][] }).values[0][0]]),
+  );
+  assert.equal(byAddress.get(`${worksheetBase}/range(address='A3')`), "NEW123");
+  assert.equal(byAddress.get(`${worksheetBase}/range(address='B3')`), 4);
+  assert.equal(patches.length, 2);
 });

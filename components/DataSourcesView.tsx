@@ -5,6 +5,7 @@ import {
   CheckCircle2,
   CircleSlash,
   Database,
+  ExternalLink,
   Pencil,
   Plus,
   RefreshCw,
@@ -307,6 +308,18 @@ export function DataSourcesView({
                   ) : null}
                 </div>
               </div>
+
+              {status.fileUrl ? (
+                <a
+                  href={status.fileUrl}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="mt-3 inline-flex items-center gap-1.5 text-xs font-semibold text-amber-700 hover:underline"
+                >
+                  <ExternalLink className="size-3.5" />
+                  Open source file
+                </a>
+              ) : null}
 
               {typeof status.partCount === "number" ? (
                 <p className="mt-3 text-xs font-medium text-stone-500">

@@ -35,8 +35,18 @@ The app is gated behind Microsoft sign-in (`proxy.ts`) because the SharePoint so
    npm run generate-cert
    ```
    This writes `certs/azure-ad-private-key.pem` (keep it secret — it's already gitignored) and `certs/azure-ad-certificate.pem`, and prints two `AZURE_AD_CERT_..._BASE64` lines. Upload `certs/azure-ad-certificate.pem` under **Certificates & secrets → Certificates → Upload certificate**, and paste the two printed lines into `.env.local`.
-4. Under **API permissions**, add these **delegated** Microsoft Graph permissions and grant admin consent: `openid`, `profile`, `email`, `offline_access`, `Sites.Read.All`.
-   - If your admin would rather not grant read access to every site, use `Sites.Selected` instead and grant it access to just the one site with the inventory workbook (see the [Graph docs on Sites.Selected](https://learn.microsoft.com/en-us/graph/permissions-selected-overview)) — swap the scope in `lib/auth/options.ts` if you go this route.
+4. Under **API permissions**, add the **delegated** Microsoft Graph permission `Sites.Selected` (plus `openid`, `profile`, `email`, `offline_access`) and grant admin consent.
+   - `Sites.Selected` grants this app **no access to any SharePoint site by default** — deliberately, so it can't read or write anything outside the specific site(s) hosting inventory workbooks, unlike `Sites.Read.All`/`Sites.ReadWrite.All` which hand it access to every site the signed-in user can reach. There's no permission that scopes down to one *file* while leaving the rest of a site alone — a whole site is the finest unit Graph offers — but this keeps it to just the site(s) you explicitly grant, not the tenant.
+   - Granting the permission in Entra ID is only half of it — you then have to grant this **specific app** access to **each SharePoint site** that has an inventory workbook, with the **Write** role (needed for updating/adding parts, not just reading). The easiest way is [PnP PowerShell](https://pnp.github.io/powershell/):
+     ```powershell
+     Install-Module -Name PnP.PowerShell -Scope CurrentUser   # once
+     Connect-PnPOnline -Url "https://<tenant>-admin.sharepoint.com" -Interactive
+     Grant-PnPAzureADAppSitePermission -AppId "<AZURE_AD_CLIENT_ID>" -DisplayName "Parts Inventory" -Site "https://<tenant>.sharepoint.com/sites/<SiteName>" -Permissions Write
+     ```
+     Run `Grant-PnPAzureADAppSitePermission` once per site that has an inventory workbook — a source pointed at a site nobody has run this for will fail with a permissions error (Forbidden) even though sign-in itself works fine, since Sites.Selected alone grants nothing until a site is explicitly authorized this way.
+     - To later revoke or list what's been granted: `Get-PnPAzureADAppSitePermission -Site "<url>"` / `Revoke-PnPAzureADAppSitePermission`.
+     - No PowerShell available? The same grant can be made by calling `POST https://graph.microsoft.com/v1.0/sites/{site-id}/permissions` (in [Graph Explorer](https://developer.microsoft.com/en-us/graph/graph-explorer), signed in as an admin) with body `{"roles": ["write"], "grantedToIdentities": [{"application": {"id": "<AZURE_AD_CLIENT_ID>", "displayName": "Parts Inventory"}}]}` — get `{site-id}` first from `GET /sites/{hostname}:{sitePath}`.
+   - Changing this permission on an app that was already set up means everyone needs to sign out and back in afterward — an existing session's refresh token won't pick up the new scope on its own.
 5. Copy the **Application (client) ID** and **Directory (tenant) ID** into `.env.local` as `AZURE_AD_CLIENT_ID` and `AZURE_AD_TENANT_ID`.
 6. Set `NEXTAUTH_SECRET` to a random value (see `.env.example` for a PowerShell one-liner, or `openssl rand -base64 32` on macOS/Linux) and `NEXTAUTH_URL` to the URL the app runs at.
 

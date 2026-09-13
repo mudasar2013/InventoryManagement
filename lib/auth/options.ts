@@ -34,14 +34,27 @@ import {
  *   {NEXTAUTH_URL}/api/auth/callback/azure-ad
  *
  * Delegated Graph permissions to request admin consent for:
- *   offline_access, openid, profile, email, Sites.Read.All
- * (Sites.Read.All lets a signed-in user read any SharePoint site they
- * already have access to. If your Azure AD admin prefers scoping this
- * to one specific site, swap it for Sites.Selected and grant that one
- * site explicitly — see the Graph docs for Sites.Selected.)
+ *   offline_access, openid, profile, email, Sites.Selected
+ * (Sites.Selected grants this app NO access to any SharePoint site by
+ * default — narrower than Sites.Read.All/Sites.ReadWrite.All, which
+ * hand it read (or read+write) access to every site the signed-in user
+ * can already reach. With Sites.Selected, an admin must separately
+ * grant this app access to each specific site that holds an inventory
+ * workbook, with the "write" role (needed since the app writes part
+ * updates/additions back into the workbook — see
+ * lib/sources/sharepoint-excel-source.ts's updatePartInWorkbook /
+ * addPartToWorkbook) — see the README's "Sign-in setup" section for the
+ * exact PnP PowerShell command. That per-site grant is the finest
+ * scoping Graph offers; there's no permission model that scopes down to
+ * one specific file while leaving the rest of a site untouched — this
+ * gets close by only ever touching the site(s) you explicitly grant,
+ * not the whole tenant. After changing this scope in the app
+ * registration's API permissions and granting admin consent, everyone
+ * needs to sign out and back in — a stored refresh token from before
+ * the change won't carry the new scope.)
  */
 
-const GRAPH_SCOPES = "offline_access openid profile email Sites.Read.All";
+const GRAPH_SCOPES = "offline_access openid profile email Sites.Selected";
 
 interface AzureTokenResponse {
   access_token: string;
