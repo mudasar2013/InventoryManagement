@@ -99,13 +99,18 @@ async function runStep<T>(description: string, fn: () => Promise<T>): Promise<T>
 /** True for the specific Graph error Microsoft returns when the thing
  *  you asked for by name (a Table, a worksheet, ...) doesn't exist —
  *  as opposed to a permissions error, a network failure, etc., which
- *  should propagate rather than be treated as "try the next thing". */
+ *  should propagate rather than be treated as "try the next thing".
+ *  Case-insensitive: the drive/file endpoints used by resolveFilePath
+ *  return "itemNotFound", but the workbook Tables endpoint has been
+ *  observed returning "ItemNotFound" (capital I) for the exact same
+ *  situation — an inconsistency in Graph's own Excel API, not
+ *  something this code can fix, only work around. */
 export function isItemNotFoundError(error: unknown): boolean {
-  return (
-    error !== null &&
-    typeof error === "object" &&
-    (error as { code?: string | null }).code === "itemNotFound"
-  );
+  if (error === null || typeof error !== "object") {
+    return false;
+  }
+  const code = (error as { code?: string | null }).code;
+  return typeof code === "string" && code.toLowerCase() === "itemnotfound";
 }
 
 /** The default document library's folder name(s) SharePoint shows in a

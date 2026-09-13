@@ -1,7 +1,12 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { Client } from "@microsoft/microsoft-graph-client";
-import { mapTableRowsToRawParts, readWorkbookData, resolveFilePath } from "./sharepoint-excel-source";
+import {
+  isItemNotFoundError,
+  mapTableRowsToRawParts,
+  readWorkbookData,
+  resolveFilePath,
+} from "./sharepoint-excel-source";
 
 /**
  * A minimal stand-in for the Graph SDK's Client — readWorkbookData only
@@ -26,6 +31,16 @@ function fakeClient(handlers: Record<string, () => Promise<unknown>>): Client {
 function itemNotFoundError(): Error {
   return Object.assign(new Error("The requested resource doesn't exist."), {
     code: "itemNotFound",
+  });
+}
+
+/** The workbook Tables endpoint has been observed returning this exact
+ *  casing ("ItemNotFound", capital I) for a missing Table, unlike the
+ *  drive/file endpoints which use "itemNotFound" — see the doc comment
+ *  on isItemNotFoundError. */
+function capitalizedItemNotFoundError(): Error {
+  return Object.assign(new Error("The requested resource doesn't exist."), {
+    code: "ItemNotFound",
   });
 }
 
@@ -141,6 +156,40 @@ test("readWorkbookData: falls back to a worksheet's used range when no Table by 
 
   assert.deepEqual(result.headers, ["PartNumber", "QtyOnHand"]);
   assert.deepEqual(result.rows, [["WR17X11705", 5]]);
+});
+
+test("readWorkbookData: still falls back to the worksheet when the Table probe 404s with capitalized \"ItemNotFound\"", async () => {
+  // The workbook Tables endpoint has been observed returning this
+  // casing for a missing Table, unlike the "itemNotFound" the drive/file
+  // endpoints use for the same situation — this must not be treated as
+  // a hard failure that skips the worksheet fallback.
+  const fileBase = "/sites/site-id/drive/root:/Inventory.xlsx:/workbook";
+  const client = fakeClient({
+    [`${fileBase}/tables/OfficeInventory`]: async () => {
+      throw capitalizedItemNotFoundError();
+    },
+    [`${fileBase}/worksheets/OfficeInventory/usedRange`]: async () => ({
+      values: [
+        ["PartNumber", "QtyOnHand"],
+        ["WR17X11705", 5],
+      ],
+    }),
+  });
+
+  const result = await readWorkbookData(client, fileBase, "Inventory.xlsx", "OfficeInventory");
+
+  assert.deepEqual(result.headers, ["PartNumber", "QtyOnHand"]);
+  assert.deepEqual(result.rows, [["WR17X11705", 5]]);
+});
+
+test("isItemNotFoundError: matches regardless of case", () => {
+  assert.equal(isItemNotFoundError(itemNotFoundError()), true);
+  assert.equal(isItemNotFoundError(capitalizedItemNotFoundError()), true);
+  assert.equal(
+    isItemNotFoundError(Object.assign(new Error("nope"), { code: "Forbidden" })),
+    false,
+  );
+  assert.equal(isItemNotFoundError(new Error("no code at all")), false);
 });
 
 test("readWorkbookData: a non-itemNotFound error on the Table probe propagates instead of falling back", async () => {
