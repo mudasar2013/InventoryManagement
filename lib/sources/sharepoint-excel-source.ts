@@ -109,6 +109,27 @@ function headerIndex(headers: string[], header: string | undefined): number {
   return header === undefined ? -1 : headers.findIndex((h) => String(h).trim() === header);
 }
 
+/** Finds the index of the `occurrence`-th (1-based, in array order) item
+ *  matching `predicate` — used by updatePartInWorkbook to land an edit on
+ *  the exact physical row it came from when a part_number appears more
+ *  than once in the sheet (see RawPart.partNumberOccurrence), rather than
+ *  always the first such row. `occurrence` defaults to 1 everywhere it's
+ *  optional, so an ordinary part_number (only one matching row) behaves
+ *  exactly as it did before this existed. Returns -1 if there are fewer
+ *  than `occurrence` matches. */
+function nthMatchIndex<T>(items: T[], predicate: (item: T) => boolean, occurrence: number): number {
+  let seen = 0;
+  for (let i = 0; i < items.length; i++) {
+    if (predicate(items[i])) {
+      seen++;
+      if (seen === occurrence) {
+        return i;
+      }
+    }
+  }
+  return -1;
+}
+
 /** Spellings a shop-floor sheet uses for a yes/no cell — checked
  *  case-insensitively, trimmed. Used to both detect whether a whole
  *  column is boolean-shaped (see columnLooksBoolean) and to read one
@@ -503,6 +524,20 @@ export function mapTableRowsToRawParts(
     extraIndices.map(({ header, idx }) => [idx, classifyExtraColumn(header, idx, rows)]),
   );
 
+  // How many rows have already been seen for a given part_number, in
+  // sheet order — a real sheet does sometimes list the same part_number
+  // twice (see mergeParts in lib/sources/merge.ts, which relies on
+  // RawPart.partNumberOccurrence to keep such rows as separate Parts
+  // instead of colliding). Tracked regardless of whether this source has
+  // an explicit id column, since it's also what lets updatePartInWorkbook
+  // find the exact physical row an edit came from rather than always the
+  // first row with that part_number. When there's no id column, the first
+  // occurrence also keeps the plain part_number slug as its id (unchanged
+  // from before this counter existed, so ordinary parts' ids and URLs
+  // stay stable) — only the second and later occurrences get a numeric
+  // suffix.
+  const partNumberOccurrences = new Map<string, number>();
+
   return rows
     .filter((row) => String(row[partNumberIdx] ?? "").trim().length > 0)
     .map((row) => {
@@ -529,9 +564,21 @@ export function mapTableRowsToRawParts(
         }
       }
 
+      const occurrence = (partNumberOccurrences.get(partNumber) ?? 0) + 1;
+      partNumberOccurrences.set(partNumber, occurrence);
+
+      let id: string;
+      if (idIdx !== -1) {
+        id = String(row[idIdx]);
+      } else {
+        const slug = slugify(partNumber);
+        id = occurrence === 1 ? `sharepoint-${slug}` : `sharepoint-${slug}-${occurrence}`;
+      }
+
       return {
-        id: idIdx !== -1 ? String(row[idIdx]) : `sharepoint-${slugify(partNumber)}`,
+        id,
         part_number: partNumber,
+        partNumberOccurrence: occurrence,
         description: descriptionIdx !== -1 ? String(row[descriptionIdx] ?? "") : "",
         bin_location: binLocationIdx !== -1 ? String(row[binLocationIdx] ?? "") : "",
         quantity_on_hand: Number.isFinite(quantity) ? quantity : 0,
@@ -786,6 +833,12 @@ async function writeFieldsToWorksheetRow(
  * a time (see writeFieldsToWorksheetRow). Throws a clear error if no
  * row with that part number is found, or if the part-number column
  * itself isn't configured/found (there'd be nothing to match against).
+ *
+ * `existingPartOccurrence` (1-based, defaults to 1) picks which row when
+ * more than one shares `existingPartNumber` — see RawPart.partNumberOccurrence.
+ * Without it, an edit to the *second* WP2163777 row, say, would silently
+ * land on the *first* one instead, since matching by part_number alone
+ * can't tell them apart.
  */
 export async function updatePartInWorkbook(
   client: Client,
@@ -794,6 +847,7 @@ export async function updatePartInWorkbook(
   columnMap: SharePointColumnMap,
   existingPartNumber: string,
   fields: PartFields,
+  existingPartOccurrence: number = 1,
 ): Promise<void> {
   const tableBase = `${fileBase}/tables/${encodeURIComponent(tableOrWorksheetName)}`;
   const tableExists = await probeTableExists(client, tableBase, tableOrWorksheetName);
@@ -817,9 +871,12 @@ export async function updatePartInWorkbook(
       () => client.api(`${tableBase}/rows`).get(),
     );
     const tableRows: { index: number; values: unknown[][] }[] = rowsResponse.value ?? [];
-    const match = tableRows.find(
+    const matchIdx = nthMatchIndex(
+      tableRows,
       (row) => String(row.values[0]?.[partNumberIdx] ?? "").trim() === existingPartNumber,
+      existingPartOccurrence,
     );
+    const match = matchIdx === -1 ? undefined : tableRows[matchIdx];
     if (!match) {
       throw new Error(
         `Can't update this part: no row with part number "${existingPartNumber}" found ` +
@@ -855,8 +912,10 @@ export async function updatePartInWorkbook(
   }
 
   const dataRows = values.slice(1);
-  const matchOffset = dataRows.findIndex(
+  const matchOffset = nthMatchIndex(
+    dataRows,
     (row) => String(row[partNumberIdx] ?? "").trim() === existingPartNumber,
+    existingPartOccurrence,
   );
   if (matchOffset === -1) {
     throw new Error(

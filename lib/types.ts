@@ -64,6 +64,20 @@ export interface RawPart {
    *  once a part has been through mapTableRowsToRawParts; absent only
    *  on hand-built fixtures that don't set it. */
   extraFields?: ExtraFields;
+  /** Which row this is among every row in the source's sheet sharing
+   *  this exact part_number, counting from 1 in sheet order (top to
+   *  bottom). Most parts are the only row with their part_number and get
+   *  1; a part number reused for a later restock (see mergeParts in
+   *  lib/sources/merge.ts, which keeps every such row as its own Part
+   *  rather than collapsing them) gets 2, 3, and so on for each further
+   *  occurrence. Editing a part sends this back as `existingPartOccurrence`
+   *  (see updatePartInWorkbook) so the write lands on the exact physical
+   *  row this Part came from — matching by part_number alone would silently
+   *  edit whichever same-numbered row happens to come first in the sheet
+   *  instead. Always present once set by mapTableRowsToRawParts; absent
+   *  only on hand-built fixtures that don't set it, which updatePartInWorkbook
+   *  treats the same as 1. */
+  partNumberOccurrence?: number;
 }
 
 /** Pulls a part's "UPN#" — the shop's own sequential internal number —

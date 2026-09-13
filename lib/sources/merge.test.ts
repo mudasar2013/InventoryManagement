@@ -64,12 +64,14 @@ test("mergeParts: every reporting source is recorded even when one wins the conf
   assert.deepEqual(new Set(merged[0].sourceIds), new Set(["local", "sharepoint"]));
 });
 
-test("mergeParts: the same source reporting the same part_number twice keeps the last row, not the first", () => {
+test("mergeParts: the same source reporting the same part_number twice keeps both rows as separate parts", () => {
   // Mirrors a real sheet: an old row for a part number that previously
   // sold through (left in place, marked out of inventory) plus a freshly
-  // appended row from restocking it. The new row must win — a technician
-  // adding a part and finding it invisible behind stale history is the
-  // bug this guards against.
+  // appended row from restocking it. These are two genuinely different
+  // physical rows, not one part described twice — a technician needs to
+  // find and edit either one, so neither should shadow the other (see
+  // RawPart.partNumberOccurrence, which is what keeps their ids distinct
+  // in real sheet data).
   const merged = mergeParts(
     [
       {
@@ -83,9 +85,37 @@ test("mergeParts: the same source reporting the same part_number twice keeps the
     ["sharepoint"],
   );
 
-  assert.equal(merged.length, 1);
-  assert.equal(merged[0].id, "sp-row-new");
-  assert.equal(merged[0].bin_location, "NEW-BIN");
+  assert.equal(merged.length, 2);
+  const byId = new Map(merged.map((part) => [part.id, part]));
+  assert.equal(byId.get("sp-row-old")?.bin_location, "OLD-BIN");
+  assert.equal(byId.get("sp-row-new")?.bin_location, "NEW-BIN");
+  assert.deepEqual(byId.get("sp-row-old")?.sourceIds, ["sharepoint"]);
+  assert.deepEqual(byId.get("sp-row-new")?.sourceIds, ["sharepoint"]);
+});
+
+test("mergeParts: a same-source duplicate part_number doesn't stop the *first* occurrence from still merging with another source", () => {
+  const merged = mergeParts(
+    [
+      {
+        sourceId: "sharepoint",
+        parts: [
+          raw({ id: "sp-row-old", quantity_on_hand: 1, bin_location: "OLD-BIN" }),
+          raw({ id: "sp-row-new", quantity_on_hand: 3, bin_location: "NEW-BIN" }),
+        ],
+      },
+      { sourceId: "local", parts: [raw({ id: "local-row", quantity_on_hand: 99 })] },
+    ],
+    ["local", "sharepoint"],
+  );
+
+  assert.equal(merged.length, 2);
+  const byId = new Map(merged.map((part) => [part.id, part]));
+  // "local" outranks "sharepoint", so it wins the conflict over the
+  // *first* sharepoint row -- the second (standalone) row is untouched.
+  assert.equal(byId.get("local-row")?.quantity_on_hand, 99);
+  assert.deepEqual(new Set(byId.get("local-row")?.sourceIds), new Set(["local", "sharepoint"]));
+  assert.equal(byId.get("sp-row-new")?.quantity_on_hand, 3);
+  assert.deepEqual(byId.get("sp-row-new")?.sourceIds, ["sharepoint"]);
 });
 
 test("mergeParts: a source absent from the priority list still merges, ranked last", () => {

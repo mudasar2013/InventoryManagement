@@ -74,13 +74,15 @@ type InventoryContextValue = {
    *  applyPartUpdate. Returns the new part's id. */
   applyNewPart: (fields: EditablePartFields, sourceId: string) => string;
   /** Applies a successful POST /api/parts/bulk write to local state —
-   *  one partial field set per part_number (only the fields that were
-   *  actually part of the bulk edit; anything a given part's source
-   *  couldn't write is simply absent from its entry, same as a normal
-   *  edit skipping an unmapped column). Keyed by part_number rather
-   *  than id since a bulk edit never renames parts. */
+   *  one partial field set per part (only the fields that were actually
+   *  part of the bulk edit; anything a given part's source couldn't
+   *  write is simply absent from its entry, same as a normal edit
+   *  skipping an unmapped column). Keyed by id, not part_number — a
+   *  bulk edit never renames parts, but more than one selected part can
+   *  share a part_number (see RawPart.partNumberOccurrence), and only
+   *  id is guaranteed to pick out one specific row. */
   applyBulkUpdate: (
-    updates: { part_number: string; fields: Partial<EditablePartFields> }[],
+    updates: { id: string; fields: Partial<EditablePartFields> }[],
   ) => void;
 };
 
@@ -149,19 +151,30 @@ export function InventoryProvider({
         return { ok: true, alreadyLinked, part, job };
       },
       applyPartUpdate: (previousId: string, fields: EditablePartFields) => {
-        const newId = `sharepoint-${slugify(fields.part_number)}`;
+        const existing = getPartById(previousId, parts);
+        // A part_number rename changes its synthesized id too — see the
+        // matching logic in mapTableRowsToRawParts. A sheet with its own
+        // id column would keep the same id across a rename, but this app
+        // doesn't know a part's id came from one vs. was synthesized, so
+        // it re-derives it the same way a fresh fetch would for the
+        // common case (a re-derived id can, rarely, land on whatever a
+        // *different* row for the renamed-to part_number already has —
+        // resolved by the next full fetch). When the part_number hasn't
+        // actually changed, though, the id stays exactly as it was: for
+        // a part that's one of several rows sharing a part_number (see
+        // RawPart.partNumberOccurrence), re-deriving from part_number
+        // alone would collide it with the *first* such row's id instead
+        // of leaving it as the specific row that was actually edited.
+        const newId =
+          existing && existing.part_number === fields.part_number
+            ? previousId
+            : `sharepoint-${slugify(fields.part_number)}`;
         setParts((current) =>
           current.map((part) =>
             part.id === previousId
               ? {
                   ...part,
                   ...fields,
-                  // A part_number rename changes its synthesized id too —
-                  // see the matching logic in mapTableRowsToRawParts. A
-                  // sheet with its own id column would keep the same id
-                  // across a rename, but this app doesn't know a part's id
-                  // came from one vs. was synthesized, so it re-derives it
-                  // the same way a fresh fetch would for the common case.
                   id: newId,
                   status: deriveStatus(fields.quantity_on_hand),
                 }
@@ -184,10 +197,10 @@ export function InventoryProvider({
         return newId;
       },
       applyBulkUpdate: (updates) => {
-        const byPartNumber = new Map(updates.map((update) => [update.part_number, update.fields]));
+        const byId = new Map(updates.map((update) => [update.id, update.fields]));
         setParts((current) =>
           current.map((part) => {
-            const fields = byPartNumber.get(part.part_number);
+            const fields = byId.get(part.id);
             if (!fields) return part;
             return {
               ...part,

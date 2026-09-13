@@ -130,6 +130,28 @@ test("mapTableRowsToRawParts: synthesizes a stable id from part_number when no i
   assert.equal(parts[0].id, "sharepoint-wr17x-11705");
 });
 
+test("mapTableRowsToRawParts: a duplicate part_number gets a distinct, suffixed id and an incrementing occurrence", () => {
+  const headers = ["PartNumber", "QtyOnHand"];
+  const rows = [
+    ["WP2163777", 1],
+    ["OTHER123", 5],
+    ["WP2163777", 1],
+    ["WP2163777", 0],
+  ];
+
+  const parts = mapTableRowsToRawParts(headers, rows, columnMap);
+
+  assert.equal(parts.length, 4);
+  assert.equal(parts[0].id, "sharepoint-wp2163777");
+  assert.equal(parts[0].partNumberOccurrence, 1);
+  assert.equal(parts[1].id, "sharepoint-other123");
+  assert.equal(parts[1].partNumberOccurrence, 1);
+  assert.equal(parts[2].id, "sharepoint-wp2163777-2");
+  assert.equal(parts[2].partNumberOccurrence, 2);
+  assert.equal(parts[3].id, "sharepoint-wp2163777-3");
+  assert.equal(parts[3].partNumberOccurrence, 3);
+});
+
 test("mapTableRowsToRawParts: uses the configured id column when present", () => {
   const headers = ["RowId", "PartNumber", "QtyOnHand"];
   const rows = [["row-9", "WR17X11705", 14]];
@@ -140,6 +162,21 @@ test("mapTableRowsToRawParts: uses the configured id column when present", () =>
   });
 
   assert.equal(parts[0].id, "row-9");
+});
+
+test("mapTableRowsToRawParts: still tracks partNumberOccurrence even when an explicit id column is configured", () => {
+  const headers = ["RowId", "PartNumber", "QtyOnHand"];
+  const rows = [
+    ["row-1", "WP2163777", 1],
+    ["row-2", "WP2163777", 0],
+  ];
+
+  const parts = mapTableRowsToRawParts(headers, rows, { ...columnMap, id: "RowId" });
+
+  assert.equal(parts[0].id, "row-1");
+  assert.equal(parts[0].partNumberOccurrence, 1);
+  assert.equal(parts[1].id, "row-2");
+  assert.equal(parts[1].partNumberOccurrence, 2);
 });
 
 test("mapTableRowsToRawParts: skips rows with a blank part number", () => {
@@ -477,6 +514,125 @@ test("updatePartInWorkbook: Table path PATCHes the matched row, updating only ma
   assert.equal(patches.length, 1);
   assert.equal(patches[0].path, `${tableBase}/rows/itemAt(index=1)`);
   assert.deepEqual(patches[0].body, { values: [["WR17X11705", 9, "other"]] });
+});
+
+test("updatePartInWorkbook: Table path picks the Nth row when existingPartOccurrence disambiguates a duplicate part number", async () => {
+  const fileBase = "/sites/site-id/drive/root:/Inventory.xlsx:/workbook";
+  const tableBase = `${fileBase}/tables/Parts`;
+  const { client, patches } = fakeWriteClient({
+    [tableBase]: async () => ({ id: "table-1" }),
+    [`${tableBase}/headerRowRange`]: async () => ({
+      values: [["PartNumber", "QtyOnHand"]],
+    }),
+    [`${tableBase}/rows`]: async () => ({
+      value: [
+        { index: 0, values: [["WP2163777", 1]] },
+        { index: 1, values: [["WP2163777", 5]] },
+      ],
+    }),
+  });
+
+  const fields: PartFields = {
+    part_number: "WP2163777",
+    description: "",
+    bin_location: "",
+    quantity_on_hand: 9,
+  };
+  // existingPartOccurrence 2 must land on the *second* WP2163777 row
+  // (table index 1), not the first one a plain part_number match would
+  // find — this is the whole point of the occurrence parameter.
+  await updatePartInWorkbook(client, fileBase, "Parts", tableColumnMap, "WP2163777", fields, 2);
+
+  assert.equal(patches.length, 1);
+  assert.equal(patches[0].path, `${tableBase}/rows/itemAt(index=1)`);
+  assert.deepEqual(patches[0].body, { values: [["WP2163777", 9]] });
+});
+
+test("updatePartInWorkbook: existingPartOccurrence defaults to 1, matching the first row", async () => {
+  const fileBase = "/sites/site-id/drive/root:/Inventory.xlsx:/workbook";
+  const tableBase = `${fileBase}/tables/Parts`;
+  const { client, patches } = fakeWriteClient({
+    [tableBase]: async () => ({ id: "table-1" }),
+    [`${tableBase}/headerRowRange`]: async () => ({
+      values: [["PartNumber", "QtyOnHand"]],
+    }),
+    [`${tableBase}/rows`]: async () => ({
+      value: [
+        { index: 0, values: [["WP2163777", 1]] },
+        { index: 1, values: [["WP2163777", 5]] },
+      ],
+    }),
+  });
+
+  await updatePartInWorkbook(client, fileBase, "Parts", tableColumnMap, "WP2163777", {
+    part_number: "WP2163777",
+    description: "",
+    bin_location: "",
+    quantity_on_hand: 9,
+  });
+
+  assert.equal(patches[0].path, `${tableBase}/rows/itemAt(index=0)`);
+});
+
+test("updatePartInWorkbook: Table path throws a clear error when existingPartOccurrence asks for a row that doesn't exist", async () => {
+  const fileBase = "/sites/site-id/drive/root:/Inventory.xlsx:/workbook";
+  const tableBase = `${fileBase}/tables/Parts`;
+  const { client } = fakeWriteClient({
+    [tableBase]: async () => ({ id: "table-1" }),
+    [`${tableBase}/headerRowRange`]: async () => ({ values: [["PartNumber", "QtyOnHand"]] }),
+    [`${tableBase}/rows`]: async () => ({ value: [{ index: 0, values: [["WP2163777", 1]] }] }),
+  });
+
+  await assert.rejects(
+    () =>
+      updatePartInWorkbook(
+        client,
+        fileBase,
+        "Parts",
+        tableColumnMap,
+        "WP2163777",
+        { part_number: "WP2163777", description: "", bin_location: "", quantity_on_hand: 9 },
+        2,
+      ),
+    /no row with part number "WP2163777"/,
+  );
+});
+
+test("updatePartInWorkbook: worksheet path picks the Nth row when existingPartOccurrence disambiguates a duplicate part number", async () => {
+  const fileBase = "/sites/site-id/drive/root:/Inventory.xlsx:/workbook";
+  const tableBase = `${fileBase}/tables/Sheet1`;
+  const worksheetBase = `${fileBase}/worksheets/Sheet1`;
+  const { client, patches } = fakeWriteClient({
+    [tableBase]: async () => {
+      throw itemNotFoundError();
+    },
+    [`${worksheetBase}/usedRange`]: async () => ({
+      rowIndex: 0,
+      columnIndex: 0,
+      values: [
+        ["PartNumber", "QtyOnHand"],
+        ["WP2163777", 1],
+        ["WP2163777", 5],
+      ],
+    }),
+  });
+
+  await updatePartInWorkbook(
+    client,
+    fileBase,
+    "Sheet1",
+    tableColumnMap,
+    "WP2163777",
+    { part_number: "WP2163777", description: "", bin_location: "", quantity_on_hand: 9 },
+    2,
+  );
+
+  // Second data row (0-based offset 1) -> absolute row 0 (usedRange) + 1
+  // (header) + 1 (offset) = 2 (0-based) = row 3.
+  const byAddress = new Map(
+    patches.map((p) => [p.path, (p.body as { values: unknown[][] }).values[0][0]]),
+  );
+  assert.equal(byAddress.get(`${worksheetBase}/range(address='B3')`), 9);
 });
 
 test("updatePartInWorkbook: Table path throws a clear error when no row matches the part number", async () => {

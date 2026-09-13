@@ -12,12 +12,24 @@ import {
 import { getTagsForParts, setTagsForPart } from "@/lib/tags-store";
 
 interface BulkFieldUpdate {
+  /** The client's Part.id — carried through purely so the response can
+   *  tell the client which specific selected part a result belongs to;
+   *  never used to locate the row in the sheet (existingPartNumber +
+   *  existingPartOccurrence do that). Needed because more than one
+   *  selected part can share a part_number (see
+   *  RawPart.partNumberOccurrence), so part_number alone can't
+   *  distinguish which result is which back on the client. */
+  id: string;
   sourceId: string;
   existingPartNumber: string;
+  /** See ParsedPartUpdateInput.existingPartOccurrence — which row to
+   *  overwrite when existingPartNumber matches more than one. */
+  existingPartOccurrence: number;
   fields: PartFields;
 }
 
 interface BulkResult {
+  id: string;
   part_number: string;
   ok: boolean;
   error?: string;
@@ -75,14 +87,18 @@ export async function POST(request: Request) {
     if (
       raw &&
       typeof raw === "object" &&
+      typeof (raw as Record<string, unknown>).id === "string" &&
       typeof (raw as Record<string, unknown>).sourceId === "string" &&
       typeof (raw as Record<string, unknown>).existingPartNumber === "string" &&
       isValidFields((raw as Record<string, unknown>).fields)
     ) {
       const r = raw as Record<string, unknown>;
+      const occurrence = Number(r.existingPartOccurrence);
       updates.push({
+        id: r.id as string,
         sourceId: r.sourceId as string,
         existingPartNumber: r.existingPartNumber as string,
+        existingPartOccurrence: Number.isFinite(occurrence) && occurrence >= 1 ? Math.trunc(occurrence) : 1,
         fields: r.fields as PartFields,
       });
     }
@@ -115,6 +131,7 @@ export async function POST(request: Request) {
           const resolved = await resolveSharePointConfigById(update.sourceId);
           if (!resolved) {
             results.push({
+              id: update.id,
               part_number: update.existingPartNumber,
               ok: false,
               error: "That source no longer exists.",
@@ -129,10 +146,12 @@ export async function POST(request: Request) {
             resolved.config.columnMap ?? COLUMN_MAP,
             update.existingPartNumber,
             update.fields,
+            update.existingPartOccurrence,
           );
-          results.push({ part_number: update.existingPartNumber, ok: true });
+          results.push({ id: update.id, part_number: update.existingPartNumber, ok: true });
         } catch (error) {
           results.push({
+            id: update.id,
             part_number: update.existingPartNumber,
             ok: false,
             error: describeError(error),

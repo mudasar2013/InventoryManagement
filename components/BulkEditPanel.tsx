@@ -60,8 +60,10 @@ export function BulkEditPanel({
       if (!sourceId) return [];
       return [
         {
+          id: part.id,
           sourceId,
           existingPartNumber: part.part_number,
+          existingPartOccurrence: part.partNumberOccurrence,
           fields: {
             part_number: part.part_number,
             description: part.description,
@@ -92,12 +94,17 @@ export function BulkEditPanel({
         throw new Error(payload.error ?? "Bulk edit failed.");
       }
 
-      const results = (payload.results ?? []) as { part_number: string; ok: boolean; error?: string }[];
+      const results = (payload.results ?? []) as {
+        id: string;
+        part_number: string;
+        ok: boolean;
+        error?: string;
+      }[];
       const failed = results.filter((result) => !result.ok);
 
       const localUpdates = parts.map((part) => {
         const fields: Partial<EditablePartFields> = {};
-        const succeeded = !fieldsSelected || results.find((r) => r.part_number === part.part_number)?.ok;
+        const succeeded = !fieldsSelected || results.find((r) => r.id === part.id)?.ok;
         if (succeeded) {
           if (setQuantity) fields.quantity_on_hand = Math.max(0, Number(quantityValue));
           if (setBinLocation) fields.bin_location = binLocationValue.trim();
@@ -109,7 +116,7 @@ export function BulkEditPanel({
           if (removeTag) nextTags = nextTags.filter((tag) => tag !== removeTag);
           fields.tags = nextTags;
         }
-        return { part_number: part.part_number, fields };
+        return { id: part.id, fields };
       });
       applyBulkUpdate(localUpdates);
 

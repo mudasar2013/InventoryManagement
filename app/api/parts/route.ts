@@ -103,6 +103,7 @@ export async function PATCH(request: Request) {
       resolved.config.columnMap ?? COLUMN_MAP,
       parsed.input.existingPartNumber,
       parsed.input.fields,
+      parsed.input.existingPartOccurrence,
     );
     return NextResponse.json({ ok: true });
   } catch (error) {

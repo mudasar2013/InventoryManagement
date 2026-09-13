@@ -17,6 +17,11 @@ export interface ParsedPartInput {
 
 export interface ParsedPartUpdateInput extends ParsedPartInput {
   existingPartNumber: string;
+  /** Which row to overwrite among every row sharing `existingPartNumber`
+   *  — see RawPart.partNumberOccurrence and updatePartInWorkbook. Defaults
+   *  to 1 (the common case: only one row has this part_number) when the
+   *  client doesn't send one. */
+  existingPartOccurrence: number;
 }
 
 /**
@@ -119,10 +124,15 @@ export function parsePartUpdateInput(
     return { error: "Missing or empty field: existingPartNumber" };
   }
 
+  const occurrence = Number(record.existingPartOccurrence);
+  const existingPartOccurrence =
+    Number.isFinite(occurrence) && occurrence >= 1 ? Math.trunc(occurrence) : 1;
+
   return {
     input: {
       ...parsed.input,
       existingPartNumber: record.existingPartNumber.trim(),
+      existingPartOccurrence,
     },
   };
 }

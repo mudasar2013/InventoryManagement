@@ -115,6 +115,43 @@ test("parsePartUpdateInput: accepts a well-formed body including existingPartNum
   }
 });
 
+test("parsePartUpdateInput: existingPartOccurrence defaults to 1 when omitted", () => {
+  const result = parsePartUpdateInput({
+    ...validAddBody,
+    existingPartNumber: "WR17X11705",
+  });
+  assert.ok("input" in result);
+  if ("input" in result) {
+    assert.equal(result.input.existingPartOccurrence, 1);
+  }
+});
+
+test("parsePartUpdateInput: passes through a valid existingPartOccurrence", () => {
+  const result = parsePartUpdateInput({
+    ...validAddBody,
+    existingPartNumber: "WR17X11705",
+    existingPartOccurrence: 2,
+  });
+  assert.ok("input" in result);
+  if ("input" in result) {
+    assert.equal(result.input.existingPartOccurrence, 2);
+  }
+});
+
+test("parsePartUpdateInput: an invalid existingPartOccurrence (zero, negative, non-numeric) falls back to 1", () => {
+  for (const bad of [0, -1, "not-a-number", null]) {
+    const result = parsePartUpdateInput({
+      ...validAddBody,
+      existingPartNumber: "WR17X11705",
+      existingPartOccurrence: bad,
+    });
+    assert.ok("input" in result);
+    if ("input" in result) {
+      assert.equal(result.input.existingPartOccurrence, 1);
+    }
+  }
+});
+
 test("parsePartUpdateInput: rejects a missing existingPartNumber", () => {
   const result = parsePartUpdateInput(validAddBody);
   assert.ok("error" in result);

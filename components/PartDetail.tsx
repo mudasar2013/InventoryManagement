@@ -116,6 +116,7 @@ export function PartDetail({ partId }: { partId: string }) {
         body: JSON.stringify({
           sourceId: form.sourceId,
           existingPartNumber: part.part_number,
+          existingPartOccurrence: part.partNumberOccurrence,
           part_number: form.part_number,
           description: form.description,
           bin_location: form.bin_location,
@@ -499,7 +500,7 @@ function TagsEditor({
   applyBulkUpdate,
 }: {
   part: { id: string; part_number: string; tags?: string[] };
-  applyBulkUpdate: (updates: { part_number: string; fields: { tags?: string[] } }[]) => void;
+  applyBulkUpdate: (updates: { id: string; fields: { tags?: string[] } }[]) => void;
 }) {
   const { tags: vocabulary } = useInventory();
   const [editing, setEditing] = useState(false);
@@ -532,7 +533,7 @@ function TagsEditor({
       if (!response.ok) {
         throw new Error(payload.error ?? "Failed to update tags.");
       }
-      applyBulkUpdate([{ part_number: part.part_number, fields: { tags: selected } }]);
+      applyBulkUpdate([{ id: part.id, fields: { tags: selected } }]);
       setEditing(false);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to update tags.");
