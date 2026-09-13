@@ -1,5 +1,5 @@
 import { Client } from "@microsoft/microsoft-graph-client";
-import type { ExtraFields, RawPart } from "../types";
+import type { ExtraField, ExtraFields, RawPart } from "../types";
 import type { InventorySource } from "./types";
 
 /**
@@ -134,6 +134,121 @@ function columnLooksBoolean(rows: unknown[][], columnIndex: number): boolean {
     }
   }
   return sawValue;
+}
+
+/** A header that names itself a yes/no column outright — e.g. "Ebay
+ *  Ready (Yes/No)", "Ebay Listed (Yes/No)" — is boolean regardless of
+ *  what this particular fetch's rows happen to contain (columnLooksBoolean
+ *  needs at least one non-blank cell to go on, so a column that's
+ *  entirely blank in every row seen so far would otherwise fall back to
+ *  "text" even though the sheet's own header says otherwise). */
+function headerNamesBoolean(header: string): boolean {
+  return /\(\s*yes\s*\/\s*no\s*\)/i.test(header);
+}
+
+/** A header containing "date" (case-insensitive) — "Entry Date", "Date
+ *  Rcvd", etc. These sheets store dates as raw Excel serial numbers
+ *  (days since 1899-12-30); reading them as plain numbers is where "the
+ *  date shows up as a number" bug came from. See excelSerialToIsoDate /
+ *  isoDateToExcelSerial below for the conversion. */
+function headerNamesDate(header: string): boolean {
+  return /date/i.test(header);
+}
+
+/** Headers this app knows a fixed, shop-specific vocabulary for. Keyed
+ *  lowercase for a case-insensitive match against the sheet's own
+ *  header text. A cell value outside this list is never discarded —
+ *  see ExtraField.options and the "select" kind's "Other" fallback in
+ *  PartDetail — so an existing sheet with values this list doesn't (yet)
+ *  cover keeps showing/editing them rather than losing data. */
+const SELECT_FIELD_OPTIONS: Record<string, string[]> = {
+  condition: ["New", "Used", "OpenBox", "Used/Working", "Other"],
+};
+
+function selectOptionsForHeader(header: string): string[] | undefined {
+  return SELECT_FIELD_OPTIONS[header.trim().toLowerCase()];
+}
+
+/** Classifies one extra column once, from its header text and (for the
+ *  boolean case, when the header itself doesn't already say so) the
+ *  values actually seen in it — see the ExtraFieldKind doc comment in
+ *  lib/types.ts for what each kind means. Order matters: a header this
+ *  app has a fixed vocabulary for (Condition) always wins, then a
+ *  header that names itself a date or a yes/no column, and only then
+ *  does content-sniffing (columnLooksBoolean) get a say. */
+function classifyExtraColumn(
+  header: string,
+  columnIndex: number,
+  rows: unknown[][],
+): { kind: "select"; options: string[] } | { kind: "date" } | { kind: "boolean" } | { kind: "text" } {
+  const options = selectOptionsForHeader(header);
+  if (options) {
+    return { kind: "select", options };
+  }
+  if (headerNamesDate(header)) {
+    return { kind: "date" };
+  }
+  if (headerNamesBoolean(header) || columnLooksBoolean(rows, columnIndex)) {
+    return { kind: "boolean" };
+  }
+  return { kind: "text" };
+}
+
+/** Excel's date serial epoch: day 0 is 1899-12-30 (not 1899-12-31 —
+ *  this bakes in Excel's own long-standing 1900-leap-year quirk, which
+ *  only matters for dates before March 1900 and is irrelevant to any
+ *  real shop-floor date). */
+const EXCEL_EPOCH_UTC_MS = Date.UTC(1899, 11, 30);
+const MS_PER_DAY = 24 * 60 * 60 * 1000;
+
+/** Converts an Excel date serial number to a "YYYY-MM-DD" string for
+ *  display/editing (an <input type="date"> wants exactly this shape). */
+function excelSerialToIsoDate(serial: number): string {
+  const date = new Date(EXCEL_EPOCH_UTC_MS + serial * MS_PER_DAY);
+  return date.toISOString().slice(0, 10);
+}
+
+/** The inverse of excelSerialToIsoDate — what gets written back to the
+ *  sheet so the cell round-trips as the same kind of value it was read
+ *  as (a plain serial number), not a string Excel would have to
+ *  re-parse. */
+function isoDateToExcelSerial(iso: string): number {
+  const [year, month, day] = iso.split("-").map(Number);
+  return Math.round((Date.UTC(year, month - 1, day) - EXCEL_EPOCH_UTC_MS) / MS_PER_DAY);
+}
+
+/** Today's date as "YYYY-MM-DD", in the server's local time zone — used
+ *  to auto-populate an "Entry Date"-shaped column when a brand-new part
+ *  is added (see withAutoEntryDate below), so nobody has to remember to
+ *  set it by hand. */
+function todayIsoDate(): string {
+  const now = new Date();
+  const year = now.getFullYear();
+  const month = String(now.getMonth() + 1).padStart(2, "0");
+  const day = String(now.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
+}
+
+/** Reads one cell as a "date" extra field. Cells are almost always a
+ *  raw Excel serial number (or blank); the defensive fallback for an
+ *  already-textual date (parsed with the platform's own Date parser)
+ *  covers a hand-typed date string, which some sheets do have here and
+ *  there, without throwing on it. Anything unparseable comes through
+ *  blank rather than surfacing garbage. */
+function extraFieldFromDateCell(cell: unknown): ExtraField {
+  const raw = String(cell ?? "").trim();
+  if (raw === "") {
+    return { kind: "date", value: "" };
+  }
+  const serial = Number(raw);
+  if (Number.isFinite(serial) && serial > 0) {
+    return { kind: "date", value: excelSerialToIsoDate(serial) };
+  }
+  const parsed = new Date(raw);
+  return {
+    kind: "date",
+    value: Number.isNaN(parsed.getTime()) ? "" : parsed.toISOString().slice(0, 10),
+  };
 }
 
 function slugify(value: string): string {
@@ -383,10 +498,8 @@ export function mapTableRowsToRawParts(
   const extraIndices = headers
     .map((header, idx) => ({ header: String(header ?? "").trim(), idx }))
     .filter(({ header, idx }) => header.length > 0 && !mappedIndices.has(idx));
-  const booleanIndices = new Set(
-    extraIndices
-      .map(({ idx }) => idx)
-      .filter((idx) => columnLooksBoolean(rows, idx)),
+  const extraKinds = new Map(
+    extraIndices.map(({ header, idx }) => [idx, classifyExtraColumn(header, idx, rows)]),
   );
 
   return rows
@@ -398,9 +511,18 @@ export function mapTableRowsToRawParts(
       const extraFields: ExtraFields = {};
       for (const { header, idx } of extraIndices) {
         const cell = row[idx];
-        if (booleanIndices.has(idx)) {
+        const classification = extraKinds.get(idx)!;
+        if (classification.kind === "boolean") {
           const normalized = String(cell ?? "").trim().toUpperCase();
           extraFields[header] = { kind: "boolean", value: TRUE_CELL_VALUES.has(normalized) };
+        } else if (classification.kind === "date") {
+          extraFields[header] = extraFieldFromDateCell(cell);
+        } else if (classification.kind === "select") {
+          extraFields[header] = {
+            kind: "select",
+            value: String(cell ?? "").trim(),
+            options: classification.options,
+          };
         } else {
           extraFields[header] = { kind: "text", value: String(cell ?? "") };
         }
@@ -500,12 +622,45 @@ function fieldAssignments(
     assignments.push([columnMap.category, fields.category ?? ""]);
   }
   for (const [header, field] of Object.entries(fields.extraFields ?? {})) {
-    assignments.push([
-      header,
-      field.kind === "boolean" ? (field.value ? "YES" : "NO") : field.value,
-    ]);
+    let value: unknown = field.value;
+    if (field.kind === "boolean") {
+      value = field.value ? "YES" : "NO";
+    } else if (field.kind === "date") {
+      const iso = typeof field.value === "string" ? field.value.trim() : "";
+      value = iso ? isoDateToExcelSerial(iso) : "";
+    }
+    assignments.push([header, value]);
   }
   return assignments;
+}
+
+/** Fills today's date into an "Entry Date"-shaped extra field when a
+ *  brand-new part is added and nothing already supplied a value for
+ *  it — see todayIsoDate. Deliberately only called from
+ *  addPartToWorkbook, never updatePartInWorkbook: an existing part's
+ *  entry date is the day it was first entered, not the day it was last
+ *  edited, so a later edit must never stomp it back to "today". */
+function withAutoEntryDate(headers: string[], fields: PartFields): PartFields {
+  const header = headers.find((h) => /entry\s*date/i.test(String(h ?? "").trim()));
+  if (!header) {
+    return fields;
+  }
+  const existing = fields.extraFields?.[header];
+  const hasValue = existing
+    ? typeof existing.value === "string"
+      ? existing.value.trim() !== ""
+      : Boolean(existing.value)
+    : false;
+  if (hasValue) {
+    return fields;
+  }
+  return {
+    ...fields,
+    extraFields: {
+      ...fields.extraFields,
+      [header]: { kind: "date", value: todayIsoDate() },
+    },
+  };
 }
 
 /** Overwrites the mapped cells of an existing row array in place —
@@ -682,7 +837,7 @@ export async function addPartToWorkbook(
     );
     const headers: string[] = (headerRange.values?.[0] ?? []).map((v: unknown) => String(v));
     const newRow: unknown[] = headers.map(() => "");
-    applyFieldsToRow(newRow, headers, columnMap, fields);
+    applyFieldsToRow(newRow, headers, columnMap, withAutoEntryDate(headers, fields));
 
     await runStep(
       `Adding a new row to Table "${tableOrWorksheetName}" failed`,
@@ -709,7 +864,7 @@ export async function addPartToWorkbook(
     startColumn0,
     newRowIndex0,
     columnMap,
-    fields,
+    withAutoEntryDate(headers, fields),
   );
 }
 

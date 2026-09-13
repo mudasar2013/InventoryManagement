@@ -67,6 +67,21 @@ function fakeWriteClient(
   return { client, patches, posts };
 }
 
+/** Independent re-implementation of the standard Excel-serial-date
+ *  formula (day 0 = 1899-12-30), used only to compute expected values
+ *  for the date-classification/round-trip tests below — deliberately
+ *  not imported from sharepoint-excel-source.ts, since these are
+ *  internal helpers and the point is to check the module's behavior
+ *  against the well-known algorithm, not against itself. */
+const EXCEL_EPOCH_UTC_MS_FOR_TEST = Date.UTC(1899, 11, 30);
+function isoFromExcelSerialForTest(serial: number): string {
+  return new Date(EXCEL_EPOCH_UTC_MS_FOR_TEST + serial * 86400000).toISOString().slice(0, 10);
+}
+function excelSerialFromIsoForTest(iso: string): number {
+  const [year, month, day] = iso.split("-").map(Number);
+  return Math.round((Date.UTC(year, month - 1, day) - EXCEL_EPOCH_UTC_MS_FOR_TEST) / 86400000);
+}
+
 function itemNotFoundError(): Error {
   return Object.assign(new Error("The requested resource doesn't exist."), {
     code: "itemNotFound",
@@ -147,6 +162,52 @@ test("mapTableRowsToRawParts: a non-numeric quantity cell falls back to 0 instea
   const parts = mapTableRowsToRawParts(headers, rows, columnMap);
 
   assert.equal(parts[0].quantity_on_hand, 0);
+});
+
+test("mapTableRowsToRawParts: a header containing \"date\" is read as kind date, converting the Excel serial to an ISO string", () => {
+  const headers = ["PartNumber", "QtyOnHand", "Entry Date"];
+  const rows = [["WR17X11705", 5, 45866]];
+
+  const parts = mapTableRowsToRawParts(headers, rows, columnMap);
+
+  assert.deepEqual(parts[0].extraFields?.["Entry Date"], {
+    kind: "date",
+    value: isoFromExcelSerialForTest(45866),
+  });
+});
+
+test("mapTableRowsToRawParts: a blank date cell reads as an empty date value, not NaN or the raw blank", () => {
+  const headers = ["PartNumber", "QtyOnHand", "Date Rcvd"];
+  const rows = [["WR17X11705", 5, ""]];
+
+  const parts = mapTableRowsToRawParts(headers, rows, columnMap);
+
+  assert.deepEqual(parts[0].extraFields?.["Date Rcvd"], { kind: "date", value: "" });
+});
+
+test("mapTableRowsToRawParts: a header naming itself \"(Yes/No)\" is boolean even when every cell seen so far is blank", () => {
+  const headers = ["PartNumber", "QtyOnHand", "Ebay Ready (Yes/No)"];
+  const rows = [["WR17X11705", 5, ""]];
+
+  const parts = mapTableRowsToRawParts(headers, rows, columnMap);
+
+  assert.deepEqual(parts[0].extraFields?.["Ebay Ready (Yes/No)"], {
+    kind: "boolean",
+    value: false,
+  });
+});
+
+test("mapTableRowsToRawParts: \"Condition\" is a select field with fixed options, and an out-of-list value is preserved as-is", () => {
+  const headers = ["PartNumber", "QtyOnHand", "Condition"];
+  const rows = [["WR17X11705", 5, "Used But Working"]];
+
+  const parts = mapTableRowsToRawParts(headers, rows, columnMap);
+
+  assert.deepEqual(parts[0].extraFields?.["Condition"], {
+    kind: "select",
+    value: "Used But Working",
+    options: ["New", "Used", "OpenBox", "Used/Working", "Other"],
+  });
 });
 
 test("mapTableRowsToRawParts: throws a clear error when a required column is missing", () => {
@@ -518,6 +579,32 @@ test("updatePartInWorkbook: worksheet path throws a clear error when no row matc
   );
 });
 
+test("updatePartInWorkbook: Table path writes a date extra field back as an Excel serial number, not the ISO string", async () => {
+  const fileBase = "/sites/site-id/drive/root:/Inventory.xlsx:/workbook";
+  const tableBase = `${fileBase}/tables/Parts`;
+  const { client, patches } = fakeWriteClient({
+    [tableBase]: async () => ({ id: "table-1" }),
+    [`${tableBase}/headerRowRange`]: async () => ({
+      values: [["PartNumber", "QtyOnHand", "Entry Date"]],
+    }),
+    [`${tableBase}/rows`]: async () => ({
+      value: [{ index: 0, values: [["WR17X11705", 5, 45866]] }],
+    }),
+  });
+
+  await updatePartInWorkbook(client, fileBase, "Parts", tableColumnMap, "WR17X11705", {
+    part_number: "WR17X11705",
+    description: "",
+    bin_location: "",
+    quantity_on_hand: 5,
+    extraFields: { "Entry Date": { kind: "date", value: "2026-08-13" } },
+  });
+
+  assert.deepEqual(patches[0].body, {
+    values: [["WR17X11705", 5, excelSerialFromIsoForTest("2026-08-13")]],
+  });
+});
+
 test("addPartToWorkbook: Table path POSTs a full-width row with mapped fields placed and everything else blank", async () => {
   const fileBase = "/sites/site-id/drive/root:/Inventory.xlsx:/workbook";
   const tableBase = `${fileBase}/tables/Parts`;
@@ -538,6 +625,57 @@ test("addPartToWorkbook: Table path POSTs a full-width row with mapped fields pl
   assert.equal(posts.length, 1);
   assert.equal(posts[0].path, `${tableBase}/rows/add`);
   assert.deepEqual(posts[0].body, { values: [["NEW123", 4, ""]] });
+});
+
+test("addPartToWorkbook: Table path auto-fills an untouched \"Entry Date\" column with today's date", async () => {
+  const fileBase = "/sites/site-id/drive/root:/Inventory.xlsx:/workbook";
+  const tableBase = `${fileBase}/tables/Parts`;
+  const { client, posts } = fakeWriteClient({
+    [tableBase]: async () => ({ id: "table-1" }),
+    [`${tableBase}/headerRowRange`]: async () => ({
+      values: [["PartNumber", "QtyOnHand", "Entry Date"]],
+    }),
+  });
+
+  await addPartToWorkbook(client, fileBase, "Parts", tableColumnMap, {
+    part_number: "NEW123",
+    description: "",
+    bin_location: "",
+    quantity_on_hand: 4,
+  });
+
+  const now = new Date();
+  const todayIso =
+    `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-` +
+    `${String(now.getDate()).padStart(2, "0")}`;
+
+  assert.equal(posts.length, 1);
+  assert.deepEqual(posts[0].body, {
+    values: [["NEW123", 4, excelSerialFromIsoForTest(todayIso)]],
+  });
+});
+
+test("addPartToWorkbook: does not override an \"Entry Date\" the caller already supplied", async () => {
+  const fileBase = "/sites/site-id/drive/root:/Inventory.xlsx:/workbook";
+  const tableBase = `${fileBase}/tables/Parts`;
+  const { client, posts } = fakeWriteClient({
+    [tableBase]: async () => ({ id: "table-1" }),
+    [`${tableBase}/headerRowRange`]: async () => ({
+      values: [["PartNumber", "QtyOnHand", "Entry Date"]],
+    }),
+  });
+
+  await addPartToWorkbook(client, fileBase, "Parts", tableColumnMap, {
+    part_number: "NEW123",
+    description: "",
+    bin_location: "",
+    quantity_on_hand: 4,
+    extraFields: { "Entry Date": { kind: "date", value: "2026-08-13" } },
+  });
+
+  assert.deepEqual(posts[0].body, {
+    values: [["NEW123", 4, excelSerialFromIsoForTest("2026-08-13")]],
+  });
 });
 
 test("addPartToWorkbook: worksheet path writes a new row just past the current used range", async () => {

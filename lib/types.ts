@@ -5,13 +5,29 @@ export type PartStatus = "In Stock" | "Low Stock" | "Out of Stock";
  *  quantity_on_hand, category) — captured so the part detail page can
  *  show (and edit) every column a workbook has, not just the ones this
  *  app has a dedicated field for. `kind` is inferred from the sheet's
- *  own values: a column where every non-blank cell is some spelling of
- *  Yes/No is "boolean" (rendered as a checkbox); anything else is
- *  "text". See columnLooksBoolean in sharepoint-excel-source.ts. */
-export type ExtraFieldKind = "text" | "boolean";
+ *  own header text and values (see sharepoint-excel-source.ts for the
+ *  exact rules):
+ *  - "boolean" — the header names itself "(Yes/No)", or every non-blank
+ *    cell in the column is some spelling of yes/no. Rendered as a
+ *    checkbox / Yes-No dropdown.
+ *  - "date" — the header contains "date" (e.g. "Entry Date", "Date
+ *    Rcvd"). The sheet stores these as raw Excel serial numbers;
+ *    `value` here is always a normalized "YYYY-MM-DD" string (or "" for
+ *    blank), converted back to a serial only when writing.
+ *  - "select" — a small set of headers this app knows the shop's fixed
+ *    vocabulary for (currently just "Condition") — `options` lists the
+ *    fixed choices to offer, but `value` can still be free text when
+ *    the sheet already has something outside that list.
+ *  - "text" — anything else. */
+export type ExtraFieldKind = "text" | "boolean" | "date" | "select";
 export interface ExtraField {
   kind: ExtraFieldKind;
   value: string | boolean;
+  /** Only meaningful for kind "select" — the fixed choices to offer
+   *  (see SELECT_FIELD_OPTIONS in sharepoint-excel-source.ts). A value
+   *  that matches none of these is still preserved and shown as
+   *  free text ("Other") rather than silently discarded. */
+  options?: string[];
 }
 export type ExtraFields = Record<string, ExtraField>;
 

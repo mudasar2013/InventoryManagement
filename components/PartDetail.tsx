@@ -93,6 +93,17 @@ export function PartDetail({ partId }: { partId: string }) {
     }));
   }
 
+  /** Formats a "date" extra field's normalized "YYYY-MM-DD" value for
+   *  the read-only display — same value the edit form's
+   *  <input type="date"> uses, just shown the way a person reads a
+   *  date rather than the ISO form a date input requires. */
+  function formatExtraDate(value: string | boolean): string {
+    const iso = typeof value === "string" ? value.trim() : "";
+    if (!iso) return "—";
+    const parsed = new Date(`${iso}T00:00:00`);
+    return Number.isNaN(parsed.getTime()) ? iso : parsed.toLocaleDateString();
+  }
+
   async function handleSave(event: React.FormEvent) {
     event.preventDefault();
     if (!part) return;
@@ -263,13 +274,35 @@ export function PartDetail({ partId }: { partId: string }) {
                   field.kind === "boolean" ? (
                     <label key={header} className="flex items-center justify-between gap-2">
                       <span className="text-sm text-stone-700">{header}</span>
+                      <select
+                        value={field.value ? "yes" : "no"}
+                        onChange={(event) => setExtraFieldValue(header, event.target.value === "yes")}
+                        className="h-9 rounded-lg border border-stone-200 bg-white px-2 text-sm outline-none focus:border-amber-400 focus:ring-2 focus:ring-amber-100"
+                      >
+                        <option value="no">No</option>
+                        <option value="yes">Yes</option>
+                      </select>
+                    </label>
+                  ) : field.kind === "date" ? (
+                    <label key={header} className="block">
+                      <span className="mb-1 block text-xs font-semibold uppercase tracking-wide text-stone-500">
+                        {header}
+                      </span>
                       <input
-                        type="checkbox"
-                        checked={Boolean(field.value)}
-                        onChange={(event) => setExtraFieldValue(header, event.target.checked)}
-                        className="size-4 rounded border-stone-300 text-amber-700 focus:ring-amber-400"
+                        type="date"
+                        value={typeof field.value === "string" ? field.value : ""}
+                        onChange={(event) => setExtraFieldValue(header, event.target.value)}
+                        className="h-11 w-full rounded-xl border border-stone-200 bg-white px-3 text-sm outline-none focus:border-amber-400 focus:ring-2 focus:ring-amber-100"
                       />
                     </label>
+                  ) : field.kind === "select" ? (
+                    <SelectOrOtherField
+                      key={header}
+                      label={header}
+                      value={typeof field.value === "string" ? field.value : ""}
+                      options={field.options ?? []}
+                      onChange={(value) => setExtraFieldValue(header, value)}
+                    />
                   ) : (
                     <FormField
                       key={header}
@@ -339,6 +372,8 @@ export function PartDetail({ partId }: { partId: string }) {
                           <Minus className="size-3.5" /> No
                         </span>
                       )
+                    ) : field.kind === "date" ? (
+                      formatExtraDate(field.value)
                     ) : (
                       String(field.value) || "—"
                     )}
@@ -393,6 +428,63 @@ export function PartDetail({ partId }: { partId: string }) {
 
       <AttachPartToJob part={part} />
     </main>
+  );
+}
+
+/** A dropdown for a "select"-kind extra field (currently just
+ *  "Condition" — see SELECT_FIELD_OPTIONS in sharepoint-excel-source.ts)
+ *  with a graceful escape hatch for a value the sheet already has that
+ *  isn't in the fixed list: rather than silently discarding or
+ *  overwriting it, the dropdown shows "Other" selected and a free-text
+ *  input pre-filled with the actual value, so it stays visible and
+ *  editable instead of forcing it into one of the fixed choices. */
+function SelectOrOtherField({
+  label,
+  value,
+  options,
+  onChange,
+}: {
+  label: string;
+  value: string;
+  options: string[];
+  onChange: (value: string) => void;
+}) {
+  const trimmed = value.trim();
+  const knownOptions = options.filter((option) => option.toLowerCase() !== "other");
+  const matched = knownOptions.find((option) => option.toLowerCase() === trimmed.toLowerCase());
+  const selectValue = trimmed === "" ? "" : (matched ?? "Other");
+
+  return (
+    <div>
+      <label className="block">
+        <span className="mb-1 block text-xs font-semibold uppercase tracking-wide text-stone-500">
+          {label}
+        </span>
+        <select
+          value={selectValue}
+          onChange={(event) => {
+            const next = event.target.value;
+            onChange(next === "Other" ? "" : next);
+          }}
+          className="h-11 w-full rounded-xl border border-stone-200 bg-white px-3 text-sm outline-none focus:border-amber-400 focus:ring-2 focus:ring-amber-100"
+        >
+          <option value="">—</option>
+          {options.map((option) => (
+            <option key={option} value={option}>
+              {option}
+            </option>
+          ))}
+        </select>
+      </label>
+      {selectValue === "Other" ? (
+        <input
+          value={value}
+          onChange={(event) => onChange(event.target.value)}
+          placeholder={`Specify ${label.toLowerCase()}`}
+          className="mt-2 h-10 w-full rounded-lg border border-stone-200 bg-white px-3 text-sm outline-none focus:border-amber-400 focus:ring-2 focus:ring-amber-100"
+        />
+      ) : null}
+    </div>
   );
 }
 

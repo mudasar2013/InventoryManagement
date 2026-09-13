@@ -21,7 +21,33 @@ test("parsePartInput: accepts a well-formed body", () => {
         description: "Water filter cartridge",
         bin_location: "A-12-04",
         quantity_on_hand: 5,
+        category: "",
+        extraFields: {},
       },
+    });
+  }
+});
+
+test("parsePartInput: carries category and extraFields through, re-validating each extra field's shape", () => {
+  const result = parsePartInput({
+    ...validAddBody,
+    category: " Motor ",
+    extraFields: {
+      "Entry Date": { kind: "date", value: "2026-08-13" },
+      "Ebay Ready (Yes/No)": { kind: "boolean", value: true },
+      Condition: { kind: "select", value: "Used But Working", options: ["New", "Used", "Other"] },
+      "HCPJob#": { kind: "text", value: "1234" },
+      Garbage: { notAField: true },
+    },
+  });
+  assert.ok("input" in result);
+  if ("input" in result) {
+    assert.equal(result.input.fields.category, "Motor");
+    assert.deepEqual(result.input.fields.extraFields, {
+      "Entry Date": { kind: "date", value: "2026-08-13" },
+      "Ebay Ready (Yes/No)": { kind: "boolean", value: true },
+      Condition: { kind: "select", value: "Used But Working", options: ["New", "Used", "Other"] },
+      "HCPJob#": { kind: "text", value: "1234" },
     });
   }
 });

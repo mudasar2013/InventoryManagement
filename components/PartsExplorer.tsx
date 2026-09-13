@@ -1,6 +1,6 @@
 "use client";
 
-import { CheckSquare, PackagePlus, PackageSearch, Search, Square, X } from "lucide-react";
+import { CheckSquare, LayoutGrid, PackagePlus, PackageSearch, Search, Square, X } from "lucide-react";
 import Link from "next/link";
 import { useMemo, useState } from "react";
 import { BulkEditPanel } from "@/components/BulkEditPanel";
@@ -34,11 +34,38 @@ export function PartsExplorer() {
   const [selecting, setSelecting] = useState(false);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [bulkEditOpen, setBulkEditOpen] = useState(false);
+  const [categoryBrowserOpen, setCategoryBrowserOpen] = useState(false);
 
   const counts = countByStatus(parts);
   const categories = useMemo(() => distinctValues(parts.map((part) => part.category)), [parts]);
   const locations = useMemo(() => distinctValues(parts.map((part) => part.bin_location)), [parts]);
   const tagValues = useMemo(() => distinctValues(parts.flatMap((part) => part.tags ?? [])), [parts]);
+
+  /** Every category currently in use, with how many parts carry it —
+   *  sorted alphabetically for a predictable list. Derived live from
+   *  `parts` (never stored on its own), so a category with no parts
+   *  left simply isn't in this list — nothing to prune. */
+  const categoryCounts = useMemo(() => {
+    const byCategory = new Map<string, number>();
+    for (const part of parts) {
+      const category = (part.category ?? "").trim();
+      if (!category) continue;
+      byCategory.set(category, (byCategory.get(category) ?? 0) + 1);
+    }
+    return Array.from(byCategory.entries()).sort((a, b) => a[0].localeCompare(b[0]));
+  }, [parts]);
+
+  /** Jumping into a category from the browser drawer: filter the list
+   *  down to it and drop straight into bulk-select mode with every
+   *  matching part already checked, ready for "Bulk edit". */
+  function browseCategory(category: string) {
+    setCategoryFilter(category);
+    setCategoryBrowserOpen(false);
+    setSelecting(true);
+    setSelectedIds(
+      new Set(parts.filter((part) => (part.category ?? "").trim() === category).map((p) => p.id)),
+    );
+  }
 
   const searched = searchParts(parts, query, filter);
   const visible = searched.filter((part) => {
@@ -87,18 +114,30 @@ export function PartsExplorer() {
         ) : (
           <span />
         )}
-        <button
-          type="button"
-          onClick={toggleSelecting}
-          className={`inline-flex items-center gap-1.5 rounded-full px-3 py-1.5 text-xs font-semibold ring-1 ${
-            selecting
-              ? "bg-stone-900 text-white ring-stone-900"
-              : "bg-white text-stone-600 ring-stone-200"
-          }`}
-        >
-          {selecting ? <X className="size-3.5" /> : <CheckSquare className="size-3.5" />}
-          {selecting ? "Cancel" : "Select"}
-        </button>
+        <div className="flex items-center gap-2">
+          {categoryCounts.length > 0 ? (
+            <button
+              type="button"
+              onClick={() => setCategoryBrowserOpen(true)}
+              className="inline-flex items-center gap-1.5 rounded-full bg-white px-3 py-1.5 text-xs font-semibold text-stone-600 ring-1 ring-stone-200"
+            >
+              <LayoutGrid className="size-3.5" />
+              Categories
+            </button>
+          ) : null}
+          <button
+            type="button"
+            onClick={toggleSelecting}
+            className={`inline-flex items-center gap-1.5 rounded-full px-3 py-1.5 text-xs font-semibold ring-1 ${
+              selecting
+                ? "bg-stone-900 text-white ring-stone-900"
+                : "bg-white text-stone-600 ring-stone-200"
+            }`}
+          >
+            {selecting ? <X className="size-3.5" /> : <CheckSquare className="size-3.5" />}
+            {selecting ? "Cancel" : "Select"}
+          </button>
+        </div>
       </div>
 
       <label className="relative block">
@@ -222,6 +261,67 @@ export function PartsExplorer() {
           }}
         />
       ) : null}
+
+      {categoryBrowserOpen ? (
+        <CategoryBrowserPanel
+          categories={categoryCounts}
+          onSelect={browseCategory}
+          onClose={() => setCategoryBrowserOpen(false)}
+        />
+      ) : null}
+    </div>
+  );
+}
+
+/** A right-side drawer listing every category in use with how many
+ *  parts carry it — tapping one filters the Parts list down to it and
+ *  selects every matching part, ready for "Bulk edit" (see
+ *  browseCategory above). A category disappears from this list the
+ *  moment no part carries it anymore, since it's derived live from
+ *  `parts` rather than kept as a separate stored list. */
+function CategoryBrowserPanel({
+  categories,
+  onSelect,
+  onClose,
+}: {
+  categories: [string, number][];
+  onSelect: (category: string) => void;
+  onClose: () => void;
+}) {
+  return (
+    <div className="fixed inset-0 z-30 flex justify-end bg-stone-900/40">
+      <div className="h-full w-full max-w-xs overflow-y-auto bg-white p-5 shadow-xl">
+        <div className="flex items-center justify-between gap-2">
+          <h2 className="text-base font-semibold text-stone-900">Categories</h2>
+          <button
+            type="button"
+            onClick={onClose}
+            className="rounded-full p-1 text-stone-400"
+            aria-label="Close"
+          >
+            <X className="size-4" />
+          </button>
+        </div>
+        <p className="mt-1 text-xs text-stone-500">
+          Tap a category to filter the list and select all its parts for bulk edit.
+        </p>
+        <ul className="mt-4 space-y-1">
+          {categories.map(([name, count]) => (
+            <li key={name}>
+              <button
+                type="button"
+                onClick={() => onSelect(name)}
+                className="flex w-full items-center justify-between rounded-xl px-3 py-2.5 text-left text-sm font-medium text-stone-800 hover:bg-amber-50"
+              >
+                <span className="truncate">{name}</span>
+                <span className="ml-2 shrink-0 rounded-full bg-stone-100 px-2 py-0.5 text-xs font-semibold text-stone-600">
+                  {count}
+                </span>
+              </button>
+            </li>
+          ))}
+        </ul>
+      </div>
     </div>
   );
 }

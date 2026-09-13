@@ -1,3 +1,4 @@
+import type { ExtraFields } from "@/lib/types";
 import type { PartFields } from "./sharepoint-excel-source";
 
 /**
@@ -51,9 +52,52 @@ export function parsePartInput(body: unknown): { input: ParsedPartInput } | { er
         description: normalizeOptionalText(record.description),
         bin_location: normalizeOptionalText(record.bin_location),
         quantity_on_hand: Math.max(0, quantity),
+        category: normalizeOptionalText(record.category),
+        extraFields: normalizeExtraFields(record.extraFields),
       },
     },
   };
+}
+
+/** Passes an "Edit this part" submission's `extraFields` through to
+ *  PartFields, re-checking each entry's shape rather than trusting the
+ *  client's JSON wholesale — a malformed or missing `kind`/`value` on
+ *  one entry falls back to a safe default instead of writing `undefined`
+ *  or some unexpected type into the workbook. See ExtraField in
+ *  lib/types.ts for what each kind means; `options` (only meaningful
+ *  for "select") is preserved when present so the value keeps whatever
+ *  fixed choice list it was classified with. */
+function normalizeExtraFields(value: unknown): ExtraFields {
+  if (!value || typeof value !== "object") {
+    return {};
+  }
+  const result: ExtraFields = {};
+  for (const [header, raw] of Object.entries(value as Record<string, unknown>)) {
+    if (!raw || typeof raw !== "object" || typeof (raw as Record<string, unknown>).kind !== "string") {
+      continue;
+    }
+    const entry = raw as Record<string, unknown>;
+    const options = Array.isArray(entry.options)
+      ? entry.options.filter((option): option is string => typeof option === "string")
+      : undefined;
+    if (entry.kind === "boolean") {
+      result[header] = { kind: "boolean", value: Boolean(entry.value) };
+    } else if (entry.kind === "date") {
+      result[header] = { kind: "date", value: typeof entry.value === "string" ? entry.value : "" };
+    } else if (entry.kind === "select") {
+      result[header] = {
+        kind: "select",
+        value: typeof entry.value === "string" ? entry.value : "",
+        options,
+      };
+    } else {
+      result[header] = {
+        kind: "text",
+        value: typeof entry.value === "string" ? entry.value : String(entry.value ?? ""),
+      };
+    }
+  }
+  return result;
 }
 
 /**
