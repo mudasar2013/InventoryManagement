@@ -54,6 +54,24 @@ export function readSharePointExcelConfig(): SharePointExcelConfig | null {
   return { siteHostname, sitePath, filePath, tableName };
 }
 
+/**
+ * Runs one Graph call and, on failure, rethrows wrapped in a plain Error
+ * naming what was being attempted — with the original error attached as
+ * `.cause` so describeErrorDetail() still shows the full Graph SDK
+ * detail (status code, error code, body). A bare "itemNotFound" is
+ * ambiguous across three unrelated things this source looks up (the
+ * site, the file, the table) — this turns it into "site lookup failed"
+ * vs. "table lookup failed", which is the difference between checking
+ * the hostname/site path and checking the file path/table name.
+ */
+async function runStep<T>(description: string, fn: () => Promise<T>): Promise<T> {
+  try {
+    return await fn();
+  } catch (error) {
+    throw new Error(description, { cause: error });
+  }
+}
+
 function slugify(value: string): string {
   return value
     .toLowerCase()
@@ -134,17 +152,32 @@ export function createSharePointExcelSource(
     id: identity?.id ?? "sharepoint",
     label: identity?.label ?? `SharePoint workbook (${config.filePath})`,
     async fetchParts(): Promise<RawPart[]> {
-      const site = await client
-        .api(`/sites/${config.siteHostname}:${config.sitePath}`)
-        .get();
+      const site = await runStep(
+        `Site lookup failed for "${config.siteHostname}${config.sitePath}" — check ` +
+          `the "Site hostname" and "Site path" fields on the Data sources page`,
+        () => client.api(`/sites/${config.siteHostname}:${config.sitePath}`).get(),
+      );
 
       const workbookBase = `/sites/${site.id}/drive/root:/${encodeURI(
         config.filePath,
       )}:/workbook/tables/${encodeURIComponent(config.tableName)}`;
 
+      const workbookNotFoundHint =
+        `check the "File path" ("${config.filePath}") is the file's path within the ` +
+        `site's default document library (not including the library name itself, ` +
+        `e.g. "Shared Documents/"), and that "Table name" ("${config.tableName}") is an ` +
+        `actual Excel Table name (Insert > Table, named in the Table Design tab) — not ` +
+        `the worksheet name`;
+
       const [headerRange, rowsResponse] = await Promise.all([
-        client.api(`${workbookBase}/headerRowRange`).get(),
-        client.api(`${workbookBase}/rows`).get(),
+        runStep(
+          `Reading the table's header row failed — ${workbookNotFoundHint}`,
+          () => client.api(`${workbookBase}/headerRowRange`).get(),
+        ),
+        runStep(
+          `Reading the table's rows failed — ${workbookNotFoundHint}`,
+          () => client.api(`${workbookBase}/rows`).get(),
+        ),
       ]);
 
       const headers: string[] = (headerRange.values?.[0] ?? []).map((value: unknown) =>

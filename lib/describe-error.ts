@@ -59,12 +59,18 @@ export function describeErrorDetail(error: unknown): string {
 
   if (error instanceof Error) {
     lines.push(`${error.name}: ${error.message || "(empty message)"}`);
+    appendGraphExtras(lines, error);
 
     let cause = (error as { cause?: unknown }).cause;
     let depth = 0;
     while (cause !== undefined && cause !== null && depth < 5) {
       if (cause instanceof Error) {
         lines.push(`Caused by: ${cause.name}: ${cause.message || "(empty message)"}`);
+        // Steps get wrapped in a plain Error("<what was being attempted>",
+        // { cause }) — see sharepoint-excel-source.ts's runStep() — so the
+        // Graph SDK's own extras usually live on this .cause, not on the
+        // outer wrapper. Check every node in the chain, not just the top.
+        appendGraphExtras(lines, cause);
         cause = (cause as { cause?: unknown }).cause;
       } else {
         lines.push(`Caused by: ${String(cause)}`);
@@ -78,33 +84,35 @@ export function describeErrorDetail(error: unknown): string {
     lines.push("unknown error");
   }
 
-  if (error && typeof error === "object") {
-    const withDetails = error as {
-      statusCode?: number;
-      code?: string | null;
-      requestId?: string | null;
-      body?: unknown;
-    };
+  return lines.join("\n");
+}
 
-    if (typeof withDetails.statusCode === "number" && withDetails.statusCode !== -1) {
-      lines.push(`HTTP status: ${withDetails.statusCode}`);
-    }
-    if (withDetails.code) {
-      lines.push(`Code: ${withDetails.code}`);
-    }
-    if (withDetails.requestId) {
-      lines.push(`Request id: ${withDetails.requestId}`);
-    }
-    if (withDetails.body !== undefined && withDetails.body !== null) {
-      const bodyText =
-        typeof withDetails.body === "string"
-          ? withDetails.body
-          : JSON.stringify(withDetails.body);
-      if (bodyText && bodyText !== "{}" && bodyText !== "null") {
-        lines.push(`Body: ${bodyText.slice(0, 500)}`);
-      }
+/** Appends Microsoft Graph SDK-shaped extras (status code, error code,
+ *  request id, raw response body) found directly on one error object —
+ *  the detail that actually pins down a cause when .message is generic
+ *  or empty. Never includes the access token or any request header. */
+function appendGraphExtras(lines: string[], error: Error): void {
+  const withDetails = error as unknown as {
+    statusCode?: number;
+    code?: string | null;
+    requestId?: string | null;
+    body?: unknown;
+  };
+
+  if (typeof withDetails.statusCode === "number" && withDetails.statusCode !== -1) {
+    lines.push(`HTTP status: ${withDetails.statusCode}`);
+  }
+  if (withDetails.code) {
+    lines.push(`Code: ${withDetails.code}`);
+  }
+  if (withDetails.requestId) {
+    lines.push(`Request id: ${withDetails.requestId}`);
+  }
+  if (withDetails.body !== undefined && withDetails.body !== null) {
+    const bodyText =
+      typeof withDetails.body === "string" ? withDetails.body : JSON.stringify(withDetails.body);
+    if (bodyText && bodyText !== "{}" && bodyText !== "null") {
+      lines.push(`Body: ${bodyText.slice(0, 500)}`);
     }
   }
-
-  return lines.join("\n");
 }
