@@ -27,6 +27,14 @@ function distinctValues(values: (string | undefined)[]): string[] {
 export function PartsExplorer() {
   const { parts, writableSources } = useInventory();
   const [query, setQuery] = useState("");
+  /** What the list is actually filtered by — only updated when the
+   *  technician presses "Find" (or Enter), not on every keystroke. A
+   *  part number can be a substring of another part's description or
+   *  bin location (see searchParts), so live-filtering on a query the
+   *  technician hasn't finished typing yet was throwing up unrelated
+   *  matches for a fraction of a second on every keystroke; a forced
+   *  search only ever runs once the full number has been typed. */
+  const [appliedQuery, setAppliedQuery] = useState("");
   const [filter, setFilter] = useState<Filter>("All");
   const [categoryFilter, setCategoryFilter] = useState(ALL);
   const [locationFilter, setLocationFilter] = useState(ALL);
@@ -67,7 +75,7 @@ export function PartsExplorer() {
     );
   }
 
-  const searched = searchParts(parts, query, filter);
+  const searched = searchParts(parts, appliedQuery, filter);
   const visible = searched.filter((part) => {
     if (categoryFilter !== ALL && (part.category ?? "").trim() !== categoryFilter) return false;
     if (locationFilter !== ALL && part.bin_location.trim() !== locationFilter) return false;
@@ -140,31 +148,50 @@ export function PartsExplorer() {
         </div>
       </div>
 
-      <label className="relative block">
-        <span className="sr-only">Search by part number</span>
-        <Search className="pointer-events-none absolute left-3.5 top-1/2 size-4 -translate-y-1/2 text-stone-400" />
-        <input
-          value={query}
-          onChange={(event) => setQuery(event.target.value)}
-          placeholder="Search by part number"
-          inputMode="search"
-          autoComplete="off"
-          autoCapitalize="characters"
-          className="h-12 w-full rounded-2xl border border-stone-200 bg-white pl-10 pr-11 text-sm text-stone-900 shadow-sm outline-none placeholder:text-stone-400 focus:border-amber-400 focus:ring-2 focus:ring-amber-100"
-        />
-        {query ? (
-          <button
-            type="button"
-            onClick={() => setQuery("")}
-            className="absolute right-3 top-1/2 -translate-y-1/2 rounded-full p-1 text-stone-400 hover:bg-stone-100 hover:text-stone-600"
-            aria-label="Clear search"
-          >
-            <X className="size-4" />
-          </button>
-        ) : null}
-      </label>
+      <form
+        onSubmit={(event) => {
+          event.preventDefault();
+          setAppliedQuery(query.trim());
+        }}
+        className="flex gap-2"
+      >
+        <label className="relative block flex-1">
+          <span className="sr-only">Search by part number</span>
+          <Search className="pointer-events-none absolute left-3.5 top-1/2 size-4 -translate-y-1/2 text-stone-400" />
+          <input
+            value={query}
+            onChange={(event) => setQuery(event.target.value)}
+            placeholder="Search by part number"
+            inputMode="search"
+            autoComplete="off"
+            autoCapitalize="characters"
+            className="h-12 w-full rounded-2xl border border-stone-200 bg-white pl-10 pr-11 text-sm text-stone-900 shadow-sm outline-none placeholder:text-stone-400 focus:border-amber-400 focus:ring-2 focus:ring-amber-100"
+          />
+          {query ? (
+            <button
+              type="button"
+              onClick={() => {
+                setQuery("");
+                setAppliedQuery("");
+              }}
+              className="absolute right-3 top-1/2 -translate-y-1/2 rounded-full p-1 text-stone-400 hover:bg-stone-100 hover:text-stone-600"
+              aria-label="Clear search"
+            >
+              <X className="size-4" />
+            </button>
+          ) : null}
+        </label>
+        <button
+          type="submit"
+          className="inline-flex h-12 shrink-0 items-center gap-1.5 rounded-2xl bg-stone-900 px-4 text-sm font-semibold text-white"
+        >
+          <Search className="size-4" />
+          Find
+        </button>
+      </form>
       <p className="text-xs text-stone-500">
-        Look up stock from the shelf — no job required. Description and bin also match.
+        Look up stock from the shelf — no job required. Type a part number and press Find (or
+        Enter). Description and bin also match.
       </p>
 
       <div className="-mx-1 flex gap-2 overflow-x-auto px-1 pb-1">

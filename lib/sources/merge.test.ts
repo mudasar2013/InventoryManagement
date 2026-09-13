@@ -64,6 +64,30 @@ test("mergeParts: every reporting source is recorded even when one wins the conf
   assert.deepEqual(new Set(merged[0].sourceIds), new Set(["local", "sharepoint"]));
 });
 
+test("mergeParts: the same source reporting the same part_number twice keeps the last row, not the first", () => {
+  // Mirrors a real sheet: an old row for a part number that previously
+  // sold through (left in place, marked out of inventory) plus a freshly
+  // appended row from restocking it. The new row must win — a technician
+  // adding a part and finding it invisible behind stale history is the
+  // bug this guards against.
+  const merged = mergeParts(
+    [
+      {
+        sourceId: "sharepoint",
+        parts: [
+          raw({ id: "sp-row-old", quantity_on_hand: 1, bin_location: "OLD-BIN" }),
+          raw({ id: "sp-row-new", quantity_on_hand: 1, bin_location: "NEW-BIN" }),
+        ],
+      },
+    ],
+    ["sharepoint"],
+  );
+
+  assert.equal(merged.length, 1);
+  assert.equal(merged[0].id, "sp-row-new");
+  assert.equal(merged[0].bin_location, "NEW-BIN");
+});
+
 test("mergeParts: a source absent from the priority list still merges, ranked last", () => {
   const merged = mergeParts(
     [

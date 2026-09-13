@@ -17,6 +17,15 @@ export interface SourceParts {
  * ranked highest; every source that reported the part_number is still
  * recorded in `sourceIds` so a conflict is visible rather than silently
  * dropped.
+ *
+ * The same source can itself report the same part_number more than once —
+ * a real sheet ends up with this when a part number is reused for a later
+ * restock (a new row appended after the part had previously sold through
+ * and its old row was left in place, marked out of inventory). Ties are
+ * broken by *last* occurrence rather than first, so a freshly appended row
+ * — which is how both addPartToWorkbook write paths add a new part —
+ * shadows a stale earlier row for the same part_number instead of being
+ * silently hidden behind it.
  */
 export function mergeParts(results: SourceParts[], priority: string[]): Part[] {
   const rank = new Map(priority.map((id, index) => [id, index]));
@@ -39,7 +48,7 @@ export function mergeParts(results: SourceParts[], priority: string[]): Part[] {
       }
 
       existing.sourceIds.push(sourceId);
-      if (sourceRank < existing.rank) {
+      if (sourceRank <= existing.rank) {
         existing.raw = raw;
         existing.rank = sourceRank;
       }
