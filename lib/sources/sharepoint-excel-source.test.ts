@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { Client } from "@microsoft/microsoft-graph-client";
-import { mapTableRowsToRawParts, readWorkbookData } from "./sharepoint-excel-source";
+import { mapTableRowsToRawParts, readWorkbookData, resolveFilePath } from "./sharepoint-excel-source";
 
 /**
  * A minimal stand-in for the Graph SDK's Client — readWorkbookData only
@@ -177,6 +177,99 @@ test("readWorkbookData: names both the file path and the table/worksheet name wh
       assert.ok(error instanceof Error);
       assert.match(error.message, /Wrong\.xlsx/);
       assert.match(error.message, /Parts/);
+      return true;
+    },
+  );
+});
+
+test("resolveFilePath: resolves as-is when the path already works", async () => {
+  const client = fakeClient({
+    "/sites/site-id/drive/root:/Inventory.xlsx": async () => ({ id: "item-1" }),
+  });
+
+  const resolved = await resolveFilePath(client, "site-id", "Inventory.xlsx");
+
+  assert.equal(resolved, "Inventory.xlsx");
+});
+
+test("resolveFilePath: falls back to stripping a leading \"Shared Documents/\" when the path as given 404s", async () => {
+  const client = fakeClient({
+    [`/sites/site-id/drive/root:/${encodeURI("Shared Documents/Inventory.xlsx")}`]: async () => {
+      throw itemNotFoundError();
+    },
+    "/sites/site-id/drive/root:/Inventory.xlsx": async () => ({ id: "item-1" }),
+  });
+
+  const resolved = await resolveFilePath(client, "site-id", "Shared Documents/Inventory.xlsx");
+
+  assert.equal(resolved, "Inventory.xlsx");
+});
+
+test("resolveFilePath: falls back to stripping a leading \"Documents/\" when the path as given 404s", async () => {
+  const client = fakeClient({
+    "/sites/site-id/drive/root:/Documents/Inventory.xlsx": async () => {
+      throw itemNotFoundError();
+    },
+    "/sites/site-id/drive/root:/Inventory.xlsx": async () => ({ id: "item-1" }),
+  });
+
+  const resolved = await resolveFilePath(client, "site-id", "Documents/Inventory.xlsx");
+
+  assert.equal(resolved, "Inventory.xlsx");
+});
+
+test("resolveFilePath: names both candidates it tried when neither resolves", async () => {
+  const client = fakeClient({
+    [`/sites/site-id/drive/root:/${encodeURI("Shared Documents/Missing.xlsx")}`]: async () => {
+      throw itemNotFoundError();
+    },
+    "/sites/site-id/drive/root:/Missing.xlsx": async () => {
+      throw itemNotFoundError();
+    },
+  });
+
+  await assert.rejects(
+    () => resolveFilePath(client, "site-id", "Shared Documents/Missing.xlsx"),
+    (error: unknown) => {
+      assert.ok(error instanceof Error);
+      assert.match(error.message, /Shared Documents\/Missing\.xlsx/);
+      assert.match(error.message, /Missing\.xlsx/);
+      return true;
+    },
+  );
+});
+
+test("resolveFilePath: a non-itemNotFound error on the first candidate propagates without trying a second", async () => {
+  let secondCandidateWasCalled = false;
+  const client = fakeClient({
+    [`/sites/site-id/drive/root:/${encodeURI("Shared Documents/Inventory.xlsx")}`]: async () => {
+      throw Object.assign(new Error("Forbidden"), { code: "Forbidden", statusCode: 403 });
+    },
+    "/sites/site-id/drive/root:/Inventory.xlsx": async () => {
+      secondCandidateWasCalled = true;
+      return { id: "item-1" };
+    },
+  });
+
+  await assert.rejects(() =>
+    resolveFilePath(client, "site-id", "Shared Documents/Inventory.xlsx"),
+  );
+  assert.equal(secondCandidateWasCalled, false);
+});
+
+test("resolveFilePath: a path with no library-name prefix has only one candidate to try", async () => {
+  const client = fakeClient({
+    [`/sites/site-id/drive/root:/${encodeURI("Team Channel/Inventory.xlsx")}`]: async () => {
+      throw itemNotFoundError();
+    },
+  });
+
+  await assert.rejects(
+    () => resolveFilePath(client, "site-id", "Team Channel/Inventory.xlsx"),
+    (error: unknown) => {
+      assert.ok(error instanceof Error);
+      assert.match(error.message, /Team Channel\/Inventory\.xlsx/);
+      assert.doesNotMatch(error.message, /also tried/);
       return true;
     },
   );

@@ -27,8 +27,18 @@ export interface SharePointExcelConfig {
   siteHostname: string;
   /** Server-relative site path, e.g. "/sites/ServiceOps" */
   sitePath: string;
-  /** Path to the workbook within the site's default document library,
-   *  e.g. "Shared Documents/Inventory.xlsx" */
+  /** Path to the workbook, relative to the site's default document
+   *  library's own root — e.g. just "Inventory.xlsx" for a file sitting
+   *  at the top of that library, or "Team Channel/Inventory.xlsx" for
+   *  one in a subfolder. Deliberately NOT including the library's own
+   *  folder name ("Shared Documents", shown in the SharePoint UI as
+   *  "Documents") — that's needed in a *browser* URL (which is relative
+   *  to the site), but the Microsoft Graph `/drive/root:/` addressing
+   *  used here is relative to the drive, and the drive already *is*
+   *  that library. Pasting a browser URL's path in verbatim is the most
+   *  common way to get this wrong, so createSharePointExcelSource also
+   *  tries stripping a leading "Shared Documents/"/"Documents/" segment
+   *  if the path as given 404s — see resolveFilePath below. */
   filePath: string;
   /** Either an Excel Table's name (Insert > Table, then named in the
    *  Table Design tab) or, when the workbook has no such Table, a
@@ -98,6 +108,68 @@ export function isItemNotFoundError(error: unknown): boolean {
   );
 }
 
+/** The default document library's folder name(s) SharePoint shows in a
+ *  browser URL — lowercased for a case-insensitive match. */
+const DEFAULT_LIBRARY_FOLDER_NAMES = ["shared documents", "documents"];
+
+/** Strips a leading "Shared Documents/" or "Documents/" segment from a
+ *  file path, if present — returns null when there's nothing to strip
+ *  (so the caller can tell "no second candidate" from "stripped to an
+ *  empty string"). See the filePath doc comment on SharePointExcelConfig
+ *  for why this mix-up happens and why it's worth trying both. */
+function withoutDefaultLibraryPrefix(filePath: string): string | null {
+  const firstSlash = filePath.indexOf("/");
+  if (firstSlash === -1) {
+    return null;
+  }
+  const firstSegment = filePath.slice(0, firstSlash).trim().toLowerCase();
+  if (!DEFAULT_LIBRARY_FOLDER_NAMES.includes(firstSegment)) {
+    return null;
+  }
+  const rest = filePath.slice(firstSlash + 1);
+  return rest.length > 0 ? rest : null;
+}
+
+/**
+ * Confirms which of one or two candidate paths the workbook actually
+ * lives at — the path as configured, and (when it starts with a default
+ * library folder name) that same path with the folder name stripped —
+ * and returns whichever one resolves. A wrong path shows up as
+ * "itemNotFound" here just like a wrong table/worksheet name would
+ * further in, so this runs first and gets its own clear error rather
+ * than leaving the ambiguity to whatever fails next.
+ */
+export async function resolveFilePath(
+  client: Client,
+  siteId: string,
+  filePath: string,
+): Promise<string> {
+  const stripped = withoutDefaultLibraryPrefix(filePath);
+  const candidates = stripped ? [filePath, stripped] : [filePath];
+
+  let lastError: unknown;
+  for (const candidate of candidates) {
+    try {
+      await client.api(`/sites/${siteId}/drive/root:/${encodeURI(candidate)}`).get();
+      return candidate;
+    } catch (error) {
+      if (!isItemNotFoundError(error)) {
+        throw new Error(`Looking up file "${candidate}" failed`, { cause: error });
+      }
+      lastError = error;
+    }
+  }
+
+  throw new Error(
+    `File not found at "${filePath}"` +
+      (stripped ? ` (also tried "${stripped}")` : "") +
+      ` — check "File path" on the Data sources page matches where the file actually is, ` +
+      `relative to the site's default document library's own root (its own folder name, ` +
+      `"Shared Documents" / "Documents", is not part of that path)`,
+    { cause: lastError },
+  );
+}
+
 /**
  * Reads a workbook's data as headers + rows, trying an Excel Table
  * first and falling back to a plain worksheet's used range if no Table
@@ -146,15 +218,15 @@ export async function readWorkbookData(
 
   // No Excel Table by that name — try it as a worksheet tab name
   // instead, reading every used cell directly (row 1 is assumed to be
-  // headers, same as the Table path). A wrong "File path" 404s at
-  // exactly this same step (the path never resolved to begin with), so
-  // the hint below covers both possibilities rather than assuming this
-  // one always means the table/worksheet name is what's wrong.
+  // headers, same as the Table path). The file itself is already
+  // confirmed to exist by this point (resolveFilePath runs before this
+  // is called), so a 404 here means "Table name" doesn't match either
+  // an Excel Table or a worksheet tab name.
   const usedRange = await runStep(
-    `Reading worksheet "${tableOrWorksheetName}" failed — check the "File path" ` +
-      `("${filePath}") is correct, and that "Table name" on the Data sources page ` +
-      `matches either an actual Excel Table name (Insert > Table, named in the Table ` +
-      `Design tab) or a worksheet tab name at the bottom of Excel`,
+    `Reading worksheet "${tableOrWorksheetName}" in "${filePath}" failed — check that ` +
+      `"Table name" on the Data sources page matches either an actual Excel Table name ` +
+      `(Insert > Table, named in the Table Design tab) or a worksheet tab name at the ` +
+      `bottom of Excel`,
     () =>
       client
         .api(`${fileBase}/worksheets/${encodeURIComponent(tableOrWorksheetName)}/usedRange`)
@@ -247,11 +319,12 @@ export function createSharePointExcelSource(
         () => client.api(`/sites/${config.siteHostname}:${config.sitePath}`).get(),
       );
 
-      const fileBase = `/sites/${site.id}/drive/root:/${encodeURI(config.filePath)}:/workbook`;
+      const resolvedFilePath = await resolveFilePath(client, site.id, config.filePath);
+      const fileBase = `/sites/${site.id}/drive/root:/${encodeURI(resolvedFilePath)}:/workbook`;
       const { headers, rows } = await readWorkbookData(
         client,
         fileBase,
-        config.filePath,
+        resolvedFilePath,
         config.tableName,
       );
 
