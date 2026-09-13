@@ -710,3 +710,111 @@ test("addPartToWorkbook: worksheet path writes a new row just past the current u
   assert.equal(byAddress.get(`${worksheetBase}/range(address='B3')`), 4);
   assert.equal(patches.length, 2);
 });
+
+test("addPartToWorkbook: Table path auto-fills UPN# with one more than the last row's value", async () => {
+  const fileBase = "/sites/site-id/drive/root:/Inventory.xlsx:/workbook";
+  const tableBase = `${fileBase}/tables/Parts`;
+  const { client, posts } = fakeWriteClient({
+    [tableBase]: async () => ({ id: "table-1" }),
+    [`${tableBase}/headerRowRange`]: async () => ({
+      values: [["PartNumber", "QtyOnHand", "UPN#"]],
+    }),
+    [`${tableBase}/rows`]: async () => ({
+      value: [
+        { index: 0, values: [["OLD1", 3, "594"]] },
+        { index: 1, values: [["OLD2", 1, "595"]] },
+      ],
+    }),
+  });
+
+  await addPartToWorkbook(client, fileBase, "Parts", tableColumnMap, {
+    part_number: "NEW123",
+    description: "",
+    bin_location: "",
+    quantity_on_hand: 4,
+  });
+
+  assert.equal(posts.length, 1);
+  assert.deepEqual(posts[0].body, { values: [["NEW123", 4, "596"]] });
+});
+
+test("addPartToWorkbook: does not override a UPN# the caller already supplied", async () => {
+  const fileBase = "/sites/site-id/drive/root:/Inventory.xlsx:/workbook";
+  const tableBase = `${fileBase}/tables/Parts`;
+  const { client, posts } = fakeWriteClient({
+    [tableBase]: async () => ({ id: "table-1" }),
+    [`${tableBase}/headerRowRange`]: async () => ({
+      values: [["PartNumber", "QtyOnHand", "UPN#"]],
+    }),
+    // addPartToWorkbook still fetches the existing rows whenever the
+    // sheet has a UPN-shaped column (it doesn't know yet whether the
+    // caller already supplied a value), but withAutoNextUpn must leave
+    // an explicit value alone rather than overwriting it.
+    [`${tableBase}/rows`]: async () => ({
+      value: [{ index: 0, values: [["OLD1", 3, "1"]] }],
+    }),
+  });
+
+  await addPartToWorkbook(client, fileBase, "Parts", tableColumnMap, {
+    part_number: "NEW123",
+    description: "",
+    bin_location: "",
+    quantity_on_hand: 4,
+    extraFields: { "UPN#": { kind: "text", value: "999" } },
+  });
+
+  assert.deepEqual(posts[0].body, { values: [["NEW123", 4, "999"]] });
+});
+
+test("addPartToWorkbook: Table path leaves UPN# blank when the column has no prior numeric value to build on", async () => {
+  const fileBase = "/sites/site-id/drive/root:/Inventory.xlsx:/workbook";
+  const tableBase = `${fileBase}/tables/Parts`;
+  const { client, posts } = fakeWriteClient({
+    [tableBase]: async () => ({ id: "table-1" }),
+    [`${tableBase}/headerRowRange`]: async () => ({
+      values: [["PartNumber", "QtyOnHand", "UPN#"]],
+    }),
+    [`${tableBase}/rows`]: async () => ({ value: [] }),
+  });
+
+  await addPartToWorkbook(client, fileBase, "Parts", tableColumnMap, {
+    part_number: "NEW123",
+    description: "",
+    bin_location: "",
+    quantity_on_hand: 4,
+  });
+
+  assert.deepEqual(posts[0].body, { values: [["NEW123", 4, ""]] });
+});
+
+test("addPartToWorkbook: worksheet path auto-fills UPN# with one more than the last row's value", async () => {
+  const fileBase = "/sites/site-id/drive/root:/Inventory.xlsx:/workbook";
+  const tableBase = `${fileBase}/tables/Sheet1`;
+  const worksheetBase = `${fileBase}/worksheets/Sheet1`;
+  const { client, patches } = fakeWriteClient({
+    [tableBase]: async () => {
+      throw itemNotFoundError();
+    },
+    [`${worksheetBase}/usedRange`]: async () => ({
+      rowIndex: 0,
+      columnIndex: 0,
+      values: [
+        ["PartNumber", "QtyOnHand", "UPN#"],
+        ["OLD1", 3, "594"],
+        ["OLD2", 1, "595"],
+      ],
+    }),
+  });
+
+  await addPartToWorkbook(client, fileBase, "Sheet1", tableColumnMap, {
+    part_number: "NEW123",
+    description: "",
+    bin_location: "",
+    quantity_on_hand: 4,
+  });
+
+  const byAddress = new Map(
+    patches.map((p) => [p.path, (p.body as { values: unknown[][] }).values[0][0]]),
+  );
+  assert.equal(byAddress.get(`${worksheetBase}/range(address='C4')`), "596");
+});

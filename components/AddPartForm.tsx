@@ -6,6 +6,13 @@ import { useRouter } from "next/navigation";
 import { useState } from "react";
 import { FormField } from "@/components/FormField";
 import { useInventory } from "@/components/InventoryProvider";
+import { CONDITION_OPTIONS } from "@/lib/types";
+
+/** The sheet header this app's Condition dropdown writes to — matches
+ *  the "select" field name sharepoint-excel-source.ts classifies (see
+ *  SELECT_FIELD_OPTIONS there). Kept as one literal here since, unlike
+ *  UPN#, this is the only extra field the Add form sets by name. */
+const CONDITION_HEADER = "Condition";
 
 export function AddPartForm() {
   const router = useRouter();
@@ -16,6 +23,7 @@ export function AddPartForm() {
     description: "",
     bin_location: "",
     quantity_on_hand: "0",
+    condition: "",
   });
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -49,6 +57,10 @@ export function AddPartForm() {
     setSubmitting(true);
     setError(null);
     try {
+      const condition = form.condition.trim();
+      const extraFields = condition
+        ? { [CONDITION_HEADER]: { kind: "select" as const, value: condition, options: [...CONDITION_OPTIONS] } }
+        : undefined;
       const response = await fetch("/api/parts", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -58,6 +70,7 @@ export function AddPartForm() {
           description: form.description,
           bin_location: form.bin_location,
           quantity_on_hand: Number(form.quantity_on_hand),
+          extraFields,
         }),
       });
       const payload = await response.json().catch(() => ({}));
@@ -70,6 +83,7 @@ export function AddPartForm() {
           description: form.description.trim(),
           bin_location: form.bin_location.trim(),
           quantity_on_hand: Math.max(0, Number(form.quantity_on_hand)),
+          extraFields,
         },
         form.sourceId,
       );
@@ -150,6 +164,24 @@ export function AddPartForm() {
           value={form.quantity_on_hand}
           onChange={(value) => setForm((f) => ({ ...f, quantity_on_hand: value }))}
         />
+
+        <label className="block">
+          <span className="mb-1 block text-xs font-semibold uppercase tracking-wide text-stone-500">
+            Condition
+          </span>
+          <select
+            value={form.condition}
+            onChange={(event) => setForm((f) => ({ ...f, condition: event.target.value }))}
+            className="h-11 w-full rounded-xl border border-stone-200 bg-white px-3 text-sm outline-none focus:border-amber-400 focus:ring-2 focus:ring-amber-100"
+          >
+            <option value="">— Not set —</option>
+            {CONDITION_OPTIONS.filter((option) => option !== "Other").map((option) => (
+              <option key={option} value={option}>
+                {option}
+              </option>
+            ))}
+          </select>
+        </label>
 
         <button
           type="submit"

@@ -31,6 +31,15 @@ export interface ExtraField {
 }
 export type ExtraFields = Record<string, ExtraField>;
 
+/** Fixed dropdown choices for the "Condition" extra field. Shared by
+ *  the server-side classification (sharepoint-excel-source.ts, which
+ *  reports these as the "select" kind's options) and the client-side
+ *  "Add a part" form (AddPartForm.tsx, which lets a technician set
+ *  Condition on a brand-new part) — kept in one place so the two lists
+ *  can't drift apart. "Other" is always last: it's the free-text
+ *  escape hatch, not a real condition. */
+export const CONDITION_OPTIONS = ["New", "Used", "OpenBox", "Used/Working", "Other"] as const;
+
 /**
  * The fields an inventory source is expected to supply for a part.
  * Deliberately excludes `status` — status is a derived value (see

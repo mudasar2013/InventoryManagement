@@ -1,4 +1,5 @@
 import { Client } from "@microsoft/microsoft-graph-client";
+import { CONDITION_OPTIONS } from "../types";
 import type { ExtraField, ExtraFields, RawPart } from "../types";
 import type { InventorySource } from "./types";
 
@@ -162,7 +163,7 @@ function headerNamesDate(header: string): boolean {
  *  PartDetail — so an existing sheet with values this list doesn't (yet)
  *  cover keeps showing/editing them rather than losing data. */
 const SELECT_FIELD_OPTIONS: Record<string, string[]> = {
-  condition: ["New", "Used", "OpenBox", "Used/Working", "Other"],
+  condition: [...CONDITION_OPTIONS],
 };
 
 function selectOptionsForHeader(header: string): string[] | undefined {
@@ -663,6 +664,71 @@ function withAutoEntryDate(headers: string[], fields: PartFields): PartFields {
   };
 }
 
+/** Finds this sheet's "UPN#" column, if it has one — matches "UPN",
+ *  "UPN#", "upn #", etc. (the "sequential internal number" the user
+ *  described — see withAutoNextUpn). */
+function findUpnHeader(headers: string[]): string | undefined {
+  return headers.find((h) => /^upn\s*#?$/i.test(String(h ?? "").trim()));
+}
+
+/** Walks a column from the bottom row up, looking for the last
+ *  non-blank value, and returns one more than it (as a string, since
+ *  extra-field values are always string | boolean — see ExtraField).
+ *  Skips trailing blank cells — a still-blank template row, or a part
+ *  like a hand-added test row that never got a UPN — rather than giving
+ *  up the moment the very last row happens to be blank. Stops (returns
+ *  undefined) the moment it hits a non-numeric value: "the next number
+ *  after some free text" isn't something this can compute, and it's
+ *  safer to leave the field for a human than to guess. */
+function nextSequentialValue(rows: unknown[][], columnIndex: number): string | undefined {
+  for (let i = rows.length - 1; i >= 0; i--) {
+    const raw = String(rows[i]?.[columnIndex] ?? "").trim();
+    if (raw === "") continue;
+    const n = Number(raw);
+    return Number.isFinite(n) ? String(Math.trunc(n) + 1) : undefined;
+  }
+  return undefined;
+}
+
+/** Fills a brand-new part's "UPN#" with one more than the last row's
+ *  own UPN# — the shop's own "sequential internal number", picked up
+ *  automatically so nobody has to look up the last one by hand. Like
+ *  withAutoEntryDate, this only ever runs from addPartToWorkbook, never
+ *  updatePartInWorkbook: an existing part keeps whatever UPN# it was
+ *  given when it was first added, never renumbered on a later edit. A
+ *  value the caller already supplied (there isn't one today — nothing
+ *  in the "Add a part" form sets this — but the check costs nothing and
+ *  means a future caller could) is left alone; a sheet with no UPN-like
+ *  column, or whose last entry isn't a plain number, is left untouched
+ *  too rather than guessing at a first value. */
+function withAutoNextUpn(headers: string[], rows: unknown[][], fields: PartFields): PartFields {
+  const header = findUpnHeader(headers);
+  if (!header) {
+    return fields;
+  }
+  const existing = fields.extraFields?.[header];
+  const hasValue = existing
+    ? typeof existing.value === "string"
+      ? existing.value.trim() !== ""
+      : Boolean(existing.value)
+    : false;
+  if (hasValue) {
+    return fields;
+  }
+  const columnIndex = headerIndex(headers, header);
+  const next = columnIndex === -1 ? undefined : nextSequentialValue(rows, columnIndex);
+  if (next === undefined) {
+    return fields;
+  }
+  return {
+    ...fields,
+    extraFields: {
+      ...fields.extraFields,
+      [header]: { kind: "text", value: next },
+    },
+  };
+}
+
 /** Overwrites the mapped cells of an existing row array in place —
  *  shared by the Table update and Table add-row paths, both of which
  *  work with a full-width row array matching the table's own header
@@ -837,7 +903,22 @@ export async function addPartToWorkbook(
     );
     const headers: string[] = (headerRange.values?.[0] ?? []).map((v: unknown) => String(v));
     const newRow: unknown[] = headers.map(() => "");
-    applyFieldsToRow(newRow, headers, columnMap, withAutoEntryDate(headers, fields));
+
+    let effectiveFields = withAutoEntryDate(headers, fields);
+    if (findUpnHeader(headers)) {
+      // Only fetch the existing rows when this sheet actually has a
+      // UPN-shaped column — most sources don't, and there's no reason
+      // to pay for an extra Graph call on every part added to them.
+      const rowsResponse = await runStep(
+        `Reading Table "${tableOrWorksheetName}"'s rows failed`,
+        () => client.api(`${tableBase}/rows`).get(),
+      );
+      const tableRows: unknown[][] = (rowsResponse.value ?? []).map(
+        (row: { values: unknown[][] }) => row.values[0],
+      );
+      effectiveFields = withAutoNextUpn(headers, tableRows, effectiveFields);
+    }
+    applyFieldsToRow(newRow, headers, columnMap, effectiveFields);
 
     await runStep(
       `Adding a new row to Table "${tableOrWorksheetName}" failed`,
@@ -856,6 +937,9 @@ export async function addPartToWorkbook(
   const startColumn0: number = usedRange.columnIndex ?? 0;
   const newRowIndex0: number = (usedRange.rowIndex ?? 0) + values.length;
 
+  let effectiveFields = withAutoEntryDate(headers, fields);
+  effectiveFields = withAutoNextUpn(headers, values.slice(1), effectiveFields);
+
   await writeFieldsToWorksheetRow(
     client,
     worksheetBase,
@@ -864,7 +948,7 @@ export async function addPartToWorkbook(
     startColumn0,
     newRowIndex0,
     columnMap,
-    withAutoEntryDate(headers, fields),
+    effectiveFields,
   );
 }
 
