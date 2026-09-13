@@ -8,13 +8,37 @@ const validBody = {
   sitePath: "/sites/ServiceOps",
   filePath: "Shared Documents/Inventory.xlsx",
   tableName: "Parts",
+  partNumberColumn: "PartNumber",
+  quantityColumn: "QtyOnHand",
 };
 
 test("parseSharePointSourceInput: accepts a well-formed body as-is", () => {
   const result = parseSharePointSourceInput(validBody);
   assert.ok("input" in result);
   if ("input" in result) {
-    assert.deepEqual(result.input, validBody);
+    // Optional column fields come through as undefined (not simply
+    // absent) when not submitted — see normalizeOptionalField.
+    assert.deepEqual(result.input, {
+      ...validBody,
+      descriptionColumn: undefined,
+      binLocationColumn: undefined,
+      idColumn: undefined,
+    });
+  }
+});
+
+test("parseSharePointSourceInput: trims and carries through optional column fields when present", () => {
+  const result = parseSharePointSourceInput({
+    ...validBody,
+    descriptionColumn: " Description ",
+    binLocationColumn: " Location ",
+    idColumn: "",
+  });
+  assert.ok("input" in result);
+  if ("input" in result) {
+    assert.equal(result.input.descriptionColumn, "Description");
+    assert.equal(result.input.binLocationColumn, "Location");
+    assert.equal(result.input.idColumn, undefined);
   }
 });
 
@@ -74,6 +98,8 @@ test("parseSharePointSourceInput: reports every missing or blank field", () => {
     assert.match(result.error, /sitePath/);
     assert.match(result.error, /filePath/);
     assert.match(result.error, /tableName/);
+    assert.match(result.error, /partNumberColumn/);
+    assert.match(result.error, /quantityColumn/);
   }
 });
 

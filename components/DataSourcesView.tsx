@@ -59,6 +59,11 @@ type SourceForm = {
   sitePath: string;
   filePath: string;
   tableName: string;
+  partNumberColumn: string;
+  quantityColumn: string;
+  descriptionColumn: string;
+  binLocationColumn: string;
+  idColumn: string;
 };
 
 const emptyForm: SourceForm = {
@@ -67,6 +72,11 @@ const emptyForm: SourceForm = {
   sitePath: "",
   filePath: "",
   tableName: "",
+  partNumberColumn: "",
+  quantityColumn: "",
+  descriptionColumn: "",
+  binLocationColumn: "",
+  idColumn: "",
 };
 
 export function DataSourcesView({
@@ -168,6 +178,14 @@ export function DataSourcesView({
         sitePath: match.sitePath,
         filePath: match.filePath,
         tableName: match.tableName,
+        // Sources added before per-source column mapping existed have
+        // none of these set — prefill with the legacy default names so
+        // editing one doesn't present blank required fields.
+        partNumberColumn: match.partNumberColumn ?? "PartNumber",
+        quantityColumn: match.quantityColumn ?? "QtyOnHand",
+        descriptionColumn: match.descriptionColumn ?? "",
+        binLocationColumn: match.binLocationColumn ?? "",
+        idColumn: match.idColumn ?? "",
       });
       setEditingId(status.id);
     } catch (err) {
@@ -363,6 +381,53 @@ export function DataSourcesView({
                     onChange={(value) => setEditForm((f) => ({ ...f, tableName: value }))}
                   />
 
+                  <p className="pt-1 text-xs leading-5 text-stone-500">
+                    This sheet&apos;s own column headers (row 1) — every source can use
+                    different names. Check &quot;Show details&quot; above for the exact
+                    headers this sheet actually has if a fetch failed on this.
+                  </p>
+                  <Field
+                    label="Part number column"
+                    placeholder="PartNumber"
+                    value={editForm.partNumberColumn}
+                    onChange={(value) =>
+                      setEditForm((f) => ({ ...f, partNumberColumn: value }))
+                    }
+                  />
+                  <Field
+                    label="Quantity column"
+                    placeholder="QtyOnHand"
+                    value={editForm.quantityColumn}
+                    onChange={(value) =>
+                      setEditForm((f) => ({ ...f, quantityColumn: value }))
+                    }
+                  />
+                  <Field
+                    label="Description column"
+                    placeholder="Description"
+                    value={editForm.descriptionColumn}
+                    onChange={(value) =>
+                      setEditForm((f) => ({ ...f, descriptionColumn: value }))
+                    }
+                    required={false}
+                  />
+                  <Field
+                    label="Location / bin column"
+                    placeholder="BinLocation"
+                    value={editForm.binLocationColumn}
+                    onChange={(value) =>
+                      setEditForm((f) => ({ ...f, binLocationColumn: value }))
+                    }
+                    required={false}
+                  />
+                  <Field
+                    label="Id column"
+                    placeholder="Leave blank to generate one from the part number"
+                    value={editForm.idColumn}
+                    onChange={(value) => setEditForm((f) => ({ ...f, idColumn: value }))}
+                    required={false}
+                  />
+
                   <div className="flex gap-2">
                     <button
                       type="button"
@@ -431,10 +496,48 @@ export function DataSourcesView({
               onChange={(value) => setForm((f) => ({ ...f, filePath: value }))}
             />
             <Field
-              label="Table name"
-              placeholder="Parts"
+              label="Table or sheet name"
+              placeholder="Parts (or a worksheet tab name, e.g. Sheet1)"
               value={form.tableName}
               onChange={(value) => setForm((f) => ({ ...f, tableName: value }))}
+            />
+
+            <p className="pt-1 text-xs leading-5 text-stone-500">
+              This sheet&apos;s own column headers (row 1) — every source can use
+              different names, so this isn&apos;t shared across sources.
+            </p>
+            <Field
+              label="Part number column"
+              placeholder="PartNumber"
+              value={form.partNumberColumn}
+              onChange={(value) => setForm((f) => ({ ...f, partNumberColumn: value }))}
+            />
+            <Field
+              label="Quantity column"
+              placeholder="QtyOnHand"
+              value={form.quantityColumn}
+              onChange={(value) => setForm((f) => ({ ...f, quantityColumn: value }))}
+            />
+            <Field
+              label="Description column"
+              placeholder="Description"
+              value={form.descriptionColumn}
+              onChange={(value) => setForm((f) => ({ ...f, descriptionColumn: value }))}
+              required={false}
+            />
+            <Field
+              label="Location / bin column"
+              placeholder="BinLocation"
+              value={form.binLocationColumn}
+              onChange={(value) => setForm((f) => ({ ...f, binLocationColumn: value }))}
+              required={false}
+            />
+            <Field
+              label="Id column"
+              placeholder="Leave blank to generate one from the part number"
+              value={form.idColumn}
+              onChange={(value) => setForm((f) => ({ ...f, idColumn: value }))}
+              required={false}
             />
 
             <button
@@ -479,19 +582,22 @@ function Field({
   placeholder,
   value,
   onChange,
+  required = true,
 }: {
   label: string;
   placeholder: string;
   value: string;
   onChange: (value: string) => void;
+  required?: boolean;
 }) {
   return (
     <label className="block">
       <span className="mb-1 block text-xs font-semibold uppercase tracking-wide text-stone-500">
         {label}
+        {required ? null : " (optional)"}
       </span>
       <input
-        required
+        required={required}
         value={value}
         placeholder={placeholder}
         onChange={(event) => onChange(event.target.value)}

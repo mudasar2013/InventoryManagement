@@ -3,23 +3,41 @@ import type { RawPart } from "../types";
 import type { InventorySource } from "./types";
 
 /**
- * ---------------------------------------------------------------------
- * EDIT THIS to match the real workbook's column headers once you can
- * see it. `part_number` and `quantity_on_hand` are required — the
- * source throws a clear error naming what it looked for if either is
- * missing, rather than silently reading garbage. The rest are optional;
- * a missing optional column just comes through blank.
- * ---------------------------------------------------------------------
+ * Which row-1 header text to read each RawPart field from. Every
+ * workbook is free to name (and order) its columns however it likes —
+ * this is what lets each SharePoint source have its own layout while
+ * still feeding the same shape into the merged catalog (see
+ * lib/sources/merge.ts, which unions/dedupes every source's RawParts by
+ * part_number into one master list). `part_number` and
+ * `quantity_on_hand` are required — mapTableRowsToRawParts throws a
+ * clear error naming what it looked for if either header isn't found,
+ * rather than silently reading garbage. The rest are optional; a
+ * missing optional column just comes through blank (or, for `id`,
+ * synthesized from part_number).
  */
-export const COLUMN_MAP = {
+export interface SharePointColumnMap {
+  part_number: string;
+  description?: string;
+  bin_location?: string;
+  quantity_on_hand: string;
+  id?: string;
+}
+
+/**
+ * Fallback column map used when a source doesn't specify its own —
+ * the legacy env-configured source, and any source added before
+ * per-source column mapping existed. New sources added from the "Data
+ * sources" page always specify their own (see SharePointExcelConfig.
+ * columnMap below), since assuming every workbook shares one fixed set
+ * of header names is exactly the assumption that broke on a second,
+ * differently-laid-out sheet.
+ */
+export const COLUMN_MAP: SharePointColumnMap = {
   part_number: "PartNumber",
   description: "Description",
   bin_location: "BinLocation",
   quantity_on_hand: "QtyOnHand",
-  // Set this to a header name only if the sheet has its own stable id
-  // column. Leave it undefined (the default) to synthesize one from
-  // part_number instead — most inventory spreadsheets don't have one.
-  id: undefined as string | undefined,
+  id: undefined,
 };
 
 export interface SharePointExcelConfig {
@@ -50,6 +68,11 @@ export interface SharePointExcelConfig {
    *  plenty of workbooks are just a sheet with headers in row 1, and
    *  this reads those too rather than requiring the conversion. */
   tableName: string;
+  /** This source's own header-name mapping — see SharePointColumnMap.
+   *  Falls back to COLUMN_MAP (the legacy hardcoded default) when
+   *  omitted, for the env-configured source and any source added
+   *  before this field existed. */
+  columnMap?: SharePointColumnMap;
 }
 
 /**
@@ -255,7 +278,7 @@ export async function readWorkbookData(
 export function mapTableRowsToRawParts(
   headers: string[],
   rows: unknown[][],
-  columnMap: typeof COLUMN_MAP = COLUMN_MAP,
+  columnMap: SharePointColumnMap = COLUMN_MAP,
 ): RawPart[] {
   const indexOf = (header: string | undefined) =>
     header === undefined ? -1 : headers.findIndex((h) => String(h).trim() === header);
@@ -270,9 +293,9 @@ export function mapTableRowsToRawParts(
     throw new Error(
       `SharePoint workbook is missing an expected column. Looked for ` +
         `"${columnMap.part_number}" and "${columnMap.quantity_on_hand}" ` +
-        `among headers: ${headers.join(", ") || "(none found)"}. Update ` +
-        `COLUMN_MAP in lib/sources/sharepoint-excel-source.ts to match ` +
-        `the real headers.`,
+        `among headers: ${headers.join(", ") || "(none found)"}. Set "Part number ` +
+        `column" and "Quantity column" on the Data sources page to match the real ` +
+        `headers for this source.`,
     );
   }
 
@@ -333,7 +356,7 @@ export function createSharePointExcelSource(
         config.tableName,
       );
 
-      return mapTableRowsToRawParts(headers, rows);
+      return mapTableRowsToRawParts(headers, rows, config.columnMap ?? COLUMN_MAP);
     },
     // The workbook is inventory only — jobs and job/part links still come
     // from the local source until there's a real job system to read.

@@ -27,6 +27,21 @@ export interface StoredSharePointSource {
   sitePath: string;
   filePath: string;
   tableName: string;
+  /** Row-1 header text this source uses for each field — every
+   *  workbook is free to name its own columns differently (a shop's
+   *  parts sheet might use "Quantity" where another uses "QtyOnHand"),
+   *  so this is per-source rather than one hardcoded assumption shared
+   *  by every SharePoint source. partNumberColumn and quantityColumn
+   *  are required for sources added through the "Data sources" page
+   *  going forward — see parse-sharepoint-input.ts — but stay optional
+   *  on this type so sources added before this field existed (which
+   *  fall back to the legacy default names, see COLUMN_MAP in
+   *  sharepoint-excel-source.ts) don't fail to parse out of Redis. */
+  partNumberColumn?: string;
+  descriptionColumn?: string;
+  binLocationColumn?: string;
+  quantityColumn?: string;
+  idColumn?: string;
   createdAt: string;
 }
 

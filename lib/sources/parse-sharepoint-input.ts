@@ -6,6 +6,8 @@ const REQUIRED_FIELDS: (keyof NewSharePointSource)[] = [
   "sitePath",
   "filePath",
   "tableName",
+  "partNumberColumn",
+  "quantityColumn",
 ];
 
 /**
@@ -42,8 +44,26 @@ export function parseSharePointSourceInput(
       sitePath: normalizeSitePath(record.sitePath as string),
       filePath: (record.filePath as string).trim(),
       tableName: (record.tableName as string).trim(),
+      partNumberColumn: (record.partNumberColumn as string).trim(),
+      quantityColumn: (record.quantityColumn as string).trim(),
+      descriptionColumn: normalizeOptionalField(record.descriptionColumn),
+      binLocationColumn: normalizeOptionalField(record.binLocationColumn),
+      idColumn: normalizeOptionalField(record.idColumn),
     },
   };
+}
+
+/** Trims an optional column-name field, treating a blank string the
+ *  same as it not being submitted at all (undefined) rather than
+ *  storing empty strings — mapTableRowsToRawParts treats an undefined
+ *  column name as "this field isn't in the sheet", which is exactly
+ *  what leaving the field blank means. */
+function normalizeOptionalField(value: unknown): string | undefined {
+  if (typeof value !== "string") {
+    return undefined;
+  }
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : undefined;
 }
 
 /**

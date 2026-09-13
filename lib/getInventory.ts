@@ -6,12 +6,36 @@ import {
   createSharePointExcelSource,
   readSharePointExcelConfig,
 } from "./sources/sharepoint-excel-source";
+import type { SharePointColumnMap } from "./sources/sharepoint-excel-source";
 import {
   isSourceStoreConfigured,
   listStoredSharePointSources,
 } from "./sources/sharepoint-source-store";
+import type { StoredSharePointSource } from "./sources/sharepoint-source-store";
 import type { InventorySource } from "./sources/types";
 import type { Job, JobPart, Part } from "./types";
+
+/**
+ * Builds this source's own column map from its stored per-source
+ * header fields — see StoredSharePointSource.partNumberColumn etc.
+ * Returns undefined (letting createSharePointExcelSource fall back to
+ * the legacy default COLUMN_MAP) for a source added before per-source
+ * column mapping existed, i.e. it has neither field set.
+ */
+function columnMapForStoredSource(
+  entry: StoredSharePointSource,
+): SharePointColumnMap | undefined {
+  if (!entry.partNumberColumn && !entry.quantityColumn) {
+    return undefined;
+  }
+  return {
+    part_number: entry.partNumberColumn || "PartNumber",
+    quantity_on_hand: entry.quantityColumn || "QtyOnHand",
+    description: entry.descriptionColumn,
+    bin_location: entry.binLocationColumn,
+    id: entry.idColumn,
+  };
+}
 
 /**
  * Status of one configured (or configurable) inventory source, for the
@@ -131,6 +155,7 @@ async function buildSources(accessToken: string | undefined): Promise<{
             sitePath: entry.sitePath,
             filePath: entry.filePath,
             tableName: entry.tableName,
+            columnMap: columnMapForStoredSource(entry),
           },
           { id: entry.id, label: entry.label },
         ),
