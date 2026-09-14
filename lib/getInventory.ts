@@ -91,11 +91,9 @@ interface SharePointEntry {
 
 async function buildSources(accessToken: string | undefined): Promise<{
   sources: InventorySource[];
-  priority: string[];
   sharePointEntries: SharePointEntry[];
 }> {
   const sources: InventorySource[] = [localSource];
-  const priority: string[] = [];
   const sharePointEntries: SharePointEntry[] = [];
 
   // The original single SharePoint source, still configured via
@@ -111,7 +109,6 @@ async function buildSources(accessToken: string | undefined): Promise<{
       detail: `${envConfig.siteHostname}${envConfig.sitePath} · ${envConfig.filePath} (table/sheet: ${envConfig.tableName})`,
       removable: false,
     });
-    priority.push(id);
     if (accessToken) {
       sources.unshift(
         createSharePointExcelSource(accessToken, envConfig, {
@@ -132,7 +129,6 @@ async function buildSources(accessToken: string | undefined): Promise<{
       detail: `${entry.siteHostname}${entry.sitePath} · ${entry.filePath} (table/sheet: ${entry.tableName})`,
       removable: true,
     });
-    priority.push(entry.id);
     if (accessToken) {
       sources.unshift(
         createSharePointExcelSource(
@@ -150,13 +146,7 @@ async function buildSources(accessToken: string | undefined): Promise<{
     }
   }
 
-  // Every SharePoint entry outranks the bundled demo catalog when they
-  // report the same part_number — see lib/sources/merge.ts. Among
-  // multiple SharePoint sources, earlier-added ones win ties, since
-  // that's the order they appear in `priority`.
-  priority.push("local");
-
-  return { sources, priority, sharePointEntries };
+  return { sources, sharePointEntries };
 }
 
 /**
@@ -177,7 +167,7 @@ async function buildSources(accessToken: string | undefined): Promise<{
  */
 export const loadInventory = cache(
   async (accessToken?: string): Promise<Inventory> => {
-    const { sources, priority, sharePointEntries } = await buildSources(accessToken);
+    const { sources, sharePointEntries } = await buildSources(accessToken);
     const warnings: string[] = [];
 
     const results = await Promise.all(
@@ -226,10 +216,7 @@ export const loadInventory = cache(
       }),
     );
 
-    const mergedParts = mergeParts(
-      results.map(({ sourceId, parts }) => ({ sourceId, parts })),
-      priority,
-    );
+    const mergedParts = mergeParts(results.map(({ sourceId, parts }) => ({ sourceId, parts })));
 
     // Tags never come from a source — attach them in one batched Redis
     // read rather than per-part, so a catalog of hundreds of parts

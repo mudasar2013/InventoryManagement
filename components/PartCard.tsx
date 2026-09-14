@@ -22,10 +22,11 @@ export function PartCard({
 }) {
   const { sourceLabels } = useInventory();
   const upn = upnFromExtraFields(part.extraFields);
-  // A part reported by more than one source (see mergeParts) shows every
-  // source it merged from, so "why does this row look different from the
-  // sheet" is answerable at a glance instead of requiring a trip to
-  // Settings → Data sources.
+  // Every part shows which single source it came from (see mergeParts —
+  // the same part_number from two different sources is always two
+  // distinct Parts, never merged into one), so "why does this row look
+  // different from the sheet" is answerable at a glance instead of
+  // requiring a trip to Settings → Data sources.
   const sourceLabel = (part.sourceIds ?? [])
     .map((id) => sourceLabels[id] ?? id)
     .join(" + ");

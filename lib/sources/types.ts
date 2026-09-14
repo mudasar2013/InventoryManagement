@@ -3,8 +3,10 @@ import type { Job, JobPart, RawPart } from "../types";
 /**
  * One place inventory data can come from. `id` must be stable and unique
  * across the sources an app is configured with — it's what merge.ts uses
- * to record provenance and resolve conflicts, and what loadInventory()
- * uses as the priority key.
+ * to record which source each Part came from (every row from every
+ * source stays its own Part; see merge.ts's doc comment for why), and
+ * what each row's synthesized id is scoped by so two sources never
+ * collide (see mapTableRowsToRawParts in sharepoint-excel-source.ts).
  *
  * A future SharePoint source implements exactly this: read a list or an
  * Excel workbook via Microsoft Graph and map each row into a RawPart.

@@ -153,14 +153,18 @@ test("mapTableRowsToRawParts: a duplicate part_number gets a distinct, suffixed 
   assert.equal(parts[3].partNumberOccurrence, 3);
 });
 
-test("mapTableRowsToRawParts: a repeated part_number's 2nd-and-later id is scoped by sourceId, so two sources never collide", () => {
+test("mapTableRowsToRawParts: every id is scoped by sourceId, so two sources never collide even on a first occurrence", () => {
   // Reproduces a real bug: "Hadi Inventory" and "7300 Inventory" each
-  // independently repeat W11688994 a second time. Before sourceId was
-  // folded into the id, both sources' 2nd occurrence computed the exact
-  // same id ("sharepoint-w11688994-2") — clicking the 7300 Inventory
-  // card would open (and silently let a save overwrite) Hadi
-  // Inventory's row instead, since parts.find(id) just returns
-  // whichever one happens to come first.
+  // independently report W11688994, and each also repeats it a second
+  // time. Before sourceId was folded into every id, both sources'
+  // occurrences computed the exact same id ("sharepoint-w11688994",
+  // "sharepoint-w11688994-2") — clicking the 7300 Inventory card would
+  // open (and silently let a save overwrite) Hadi Inventory's row
+  // instead, since parts.find(id) just returns whichever one happens to
+  // come first. mergeParts never combines rows from different sources —
+  // W11688994 in Hadi Inventory and W11688994 in 7300 Inventory are two
+  // distinct physical stock records, not one part described twice — so
+  // every row, first occurrence included, needs a globally unique id.
   const headers = ["PartNumber", "QtyOnHand"];
   const hadiRows = [
     ["W11688994", 1],
@@ -174,14 +178,10 @@ test("mapTableRowsToRawParts: a repeated part_number's 2nd-and-later id is scope
   const hadiParts = mapTableRowsToRawParts(headers, hadiRows, columnMap, "hadi-inventory");
   const parts7300 = mapTableRowsToRawParts(headers, inventory7300Rows, columnMap, "7300-inventory");
 
-  // First occurrences keep the plain, source-agnostic id — mergeParts
-  // dedupes these across sources by part_number, so a shared id here is
-  // fine (and expected: it's what lets them merge into one card).
-  assert.equal(hadiParts[0].id, "sharepoint-w11688994");
-  assert.equal(parts7300[0].id, "sharepoint-w11688994");
+  assert.equal(hadiParts[0].id, "hadi-inventory-w11688994");
+  assert.equal(parts7300[0].id, "7300-inventory-w11688994");
+  assert.notEqual(hadiParts[0].id, parts7300[0].id);
 
-  // Second occurrences never merge (see mergeParts) and must stay
-  // addressable as distinct rows.
   assert.equal(hadiParts[1].id, "hadi-inventory-w11688994-2");
   assert.equal(parts7300[1].id, "7300-inventory-w11688994-2");
   assert.notEqual(hadiParts[1].id, parts7300[1].id);

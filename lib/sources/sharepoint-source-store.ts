@@ -102,9 +102,10 @@ export async function addStoredSharePointSource(
 /**
  * Overwrites an existing entry's fields in place (id and createdAt are
  * kept) — used by the "Data sources" page to fix a typo'd hostname/path
- * without deleting and re-adding the source (which would also lose its
- * position in the merge-priority list). Throws if the store isn't
- * configured, or if no entry with that id exists.
+ * without deleting and re-adding the source (which would also change its
+ * id, and with it every part id this source has ever synthesized).
+ * Throws if the store isn't configured, or if no entry with that id
+ * exists.
  */
 export async function updateStoredSharePointSource(
   id: string,

@@ -14,10 +14,7 @@ function raw(overrides: Partial<Parameters<typeof mergeParts>[0][number]["parts"
 }
 
 test("mergeParts: a part_number reported by only one source passes through, status derived", () => {
-  const merged = mergeParts(
-    [{ sourceId: "local", parts: [raw()] }],
-    ["local"],
-  );
+  const merged = mergeParts([{ sourceId: "local", parts: [raw()] }]);
 
   assert.equal(merged.length, 1);
   assert.equal(merged[0].part_number, "WR17X11705");
@@ -25,65 +22,39 @@ test("mergeParts: a part_number reported by only one source passes through, stat
   assert.deepEqual(merged[0].sourceIds, ["local"]);
 });
 
-test("mergeParts: the same part_number from two sources is deduped, not duplicated", () => {
-  const merged = mergeParts(
-    [
-      { sourceId: "local", parts: [raw({ quantity_on_hand: 14 })] },
-      { sourceId: "sharepoint", parts: [raw({ id: "sp-row-9", quantity_on_hand: 2 })] },
-    ],
-    ["local", "sharepoint"],
-  );
+test("mergeParts: the same part_number from two sources stays two distinct Parts, not deduped", () => {
+  // "Hadi Inventory" and "7300 Inventory" reporting the same part_number
+  // are two different physical stock records (different bin, different
+  // quantity) — combining them into one card would silently drop one
+  // source's data and make its row impossible to find or edit on its
+  // own, so both must survive as separate Parts.
+  const merged = mergeParts([
+    { sourceId: "hadi-inventory", parts: [raw({ id: "hadi-w11688994", quantity_on_hand: 1, bin_location: "L02-R1-S3-B" })] },
+    { sourceId: "7300-inventory", parts: [raw({ id: "7300-w11688994", quantity_on_hand: 1, bin_location: "R0-S4-B8-Clear" })] },
+  ]);
 
-  assert.equal(merged.length, 1);
+  assert.equal(merged.length, 2);
+  const byId = new Map(merged.map((part) => [part.id, part]));
+  assert.equal(byId.get("hadi-w11688994")?.bin_location, "L02-R1-S3-B");
+  assert.deepEqual(byId.get("hadi-w11688994")?.sourceIds, ["hadi-inventory"]);
+  assert.equal(byId.get("7300-w11688994")?.bin_location, "R0-S4-B8-Clear");
+  assert.deepEqual(byId.get("7300-w11688994")?.sourceIds, ["7300-inventory"]);
 });
 
-test("mergeParts: conflicting fields resolve using the priority order, not arrival order", () => {
-  const merged = mergeParts(
-    [
-      { sourceId: "sharepoint", parts: [raw({ id: "sp-row-9", quantity_on_hand: 2 })] },
-      { sourceId: "local", parts: [raw({ quantity_on_hand: 14 })] },
-    ],
-    // "local" is ranked ahead of "sharepoint" even though sharepoint's
-    // result was passed first — priority order must win, not call order.
-    ["local", "sharepoint"],
-  );
-
-  assert.equal(merged[0].quantity_on_hand, 14);
-  assert.equal(merged[0].id, "prt-local-1");
-});
-
-test("mergeParts: every reporting source is recorded even when one wins the conflict", () => {
-  const merged = mergeParts(
-    [
-      { sourceId: "local", parts: [raw({ quantity_on_hand: 14 })] },
-      { sourceId: "sharepoint", parts: [raw({ id: "sp-row-9", quantity_on_hand: 2 })] },
-    ],
-    ["local", "sharepoint"],
-  );
-
-  assert.deepEqual(new Set(merged[0].sourceIds), new Set(["local", "sharepoint"]));
-});
-
-test("mergeParts: the same source reporting the same part_number twice keeps both rows as separate parts", () => {
+test("mergeParts: the same source reporting the same part_number twice also stays two distinct Parts", () => {
   // Mirrors a real sheet: an old row for a part number that previously
   // sold through (left in place, marked out of inventory) plus a freshly
   // appended row from restocking it. These are two genuinely different
-  // physical rows, not one part described twice — a technician needs to
-  // find and edit either one, so neither should shadow the other (see
-  // RawPart.partNumberOccurrence, which is what keeps their ids distinct
-  // in real sheet data).
-  const merged = mergeParts(
-    [
-      {
-        sourceId: "sharepoint",
-        parts: [
-          raw({ id: "sp-row-old", quantity_on_hand: 1, bin_location: "OLD-BIN" }),
-          raw({ id: "sp-row-new", quantity_on_hand: 1, bin_location: "NEW-BIN" }),
-        ],
-      },
-    ],
-    ["sharepoint"],
-  );
+  // physical rows, not one part described twice.
+  const merged = mergeParts([
+    {
+      sourceId: "sharepoint",
+      parts: [
+        raw({ id: "sp-row-old", quantity_on_hand: 1, bin_location: "OLD-BIN" }),
+        raw({ id: "sp-row-new", quantity_on_hand: 1, bin_location: "NEW-BIN" }),
+      ],
+    },
+  ]);
 
   assert.equal(merged.length, 2);
   const byId = new Map(merged.map((part) => [part.id, part]));
@@ -93,39 +64,23 @@ test("mergeParts: the same source reporting the same part_number twice keeps bot
   assert.deepEqual(byId.get("sp-row-new")?.sourceIds, ["sharepoint"]);
 });
 
-test("mergeParts: a same-source duplicate part_number doesn't stop the *first* occurrence from still merging with another source", () => {
-  const merged = mergeParts(
-    [
-      {
-        sourceId: "sharepoint",
-        parts: [
-          raw({ id: "sp-row-old", quantity_on_hand: 1, bin_location: "OLD-BIN" }),
-          raw({ id: "sp-row-new", quantity_on_hand: 3, bin_location: "NEW-BIN" }),
-        ],
-      },
-      { sourceId: "local", parts: [raw({ id: "local-row", quantity_on_hand: 99 })] },
-    ],
-    ["local", "sharepoint"],
-  );
+test("mergeParts: an empty source contributes nothing", () => {
+  const merged = mergeParts([
+    { sourceId: "local", parts: [raw()] },
+    { sourceId: "sharepoint", parts: [] },
+  ]);
 
-  assert.equal(merged.length, 2);
-  const byId = new Map(merged.map((part) => [part.id, part]));
-  // "local" outranks "sharepoint", so it wins the conflict over the
-  // *first* sharepoint row -- the second (standalone) row is untouched.
-  assert.equal(byId.get("local-row")?.quantity_on_hand, 99);
-  assert.deepEqual(new Set(byId.get("local-row")?.sourceIds), new Set(["local", "sharepoint"]));
-  assert.equal(byId.get("sp-row-new")?.quantity_on_hand, 3);
-  assert.deepEqual(byId.get("sp-row-new")?.sourceIds, ["sharepoint"]);
+  assert.equal(merged.length, 1);
+  assert.deepEqual(merged[0].sourceIds, ["local"]);
 });
 
-test("mergeParts: a source absent from the priority list still merges, ranked last", () => {
-  const merged = mergeParts(
-    [
-      { sourceId: "unranked", parts: [raw({ quantity_on_hand: 1 })] },
-      { sourceId: "local", parts: [raw({ quantity_on_hand: 14 })] },
-    ],
-    ["local"],
-  );
+test("mergeParts: preserves each row's own field values rather than picking a winner", () => {
+  const merged = mergeParts([
+    { sourceId: "sharepoint", parts: [raw({ id: "sp-row-9", quantity_on_hand: 2 })] },
+    { sourceId: "local", parts: [raw({ quantity_on_hand: 14 })] },
+  ]);
 
-  assert.equal(merged[0].quantity_on_hand, 14);
+  const byId = new Map(merged.map((part) => [part.id, part]));
+  assert.equal(byId.get("sp-row-9")?.quantity_on_hand, 2);
+  assert.equal(byId.get("prt-local-1")?.quantity_on_hand, 14);
 });

@@ -485,18 +485,20 @@ export async function readWorkbookData(
  * network shape (headers: string[], rows: unknown[][]) is exactly what
  * the Graph workbook range/rows APIs return.
  *
- * `sourceId` scopes the synthesized id given to a source's *second and
- * later* occurrence of a repeated part_number (see partNumberOccurrences
- * below) — without it, two different sources that each happen to repeat
- * the same part_number the same number of times would synthesize the
- * exact same id (e.g. two sources both reusing "W11688994" a second
- * time would both get "sharepoint-w11688994-2"), so `parts.find(id)`
- * would silently resolve to whichever source's row happened to come
- * first in the merged list — editing "the 7300 Inventory row" would
- * silently open and overwrite Hadi Inventory's row instead. A first
- * occurrence doesn't need this: it's always deduped by part_number
- * across sources in mergeParts, so it never lands in the id-colliding
- * "standalone" list to begin with.
+ * `sourceId` scopes every synthesized id to the source it came from.
+ * mergeParts never combines rows from different sources — the same
+ * part_number reported by two different sources (e.g. "Hadi Inventory"
+ * and "7300 Inventory") is always shown as two distinct Parts, since
+ * they're two physically different stock records that happen to share a
+ * part number, not one part described twice. That means every row from
+ * every source needs a globally unique id, first occurrence included:
+ * without sourceId baked in, two sources each holding a first-occurrence
+ * row for the same part_number (or each repeating a part_number the same
+ * number of times) would synthesize the exact same id, and
+ * `parts.find(id)` would silently resolve to whichever source's row
+ * happened to come first in the combined list — editing "the 7300
+ * Inventory row" would silently open and overwrite Hadi Inventory's row
+ * instead.
  */
 export function mapTableRowsToRawParts(
   headers: string[],
@@ -545,11 +547,8 @@ export function mapTableRowsToRawParts(
   // instead of colliding). Tracked regardless of whether this source has
   // an explicit id column, since it's also what lets updatePartInWorkbook
   // find the exact physical row an edit came from rather than always the
-  // first row with that part_number. When there's no id column, the first
-  // occurrence also keeps the plain part_number slug as its id (unchanged
-  // from before this counter existed, so ordinary parts' ids and URLs
-  // stay stable) — only the second and later occurrences get a numeric
-  // suffix.
+  // first row with that part_number, and what makes this source's own
+  // synthesized id (below) unique among its own rows.
   const partNumberOccurrences = new Map<string, number>();
 
   return rows
@@ -586,12 +585,11 @@ export function mapTableRowsToRawParts(
         id = String(row[idIdx]);
       } else {
         const slug = slugify(partNumber);
-        // Only the 2nd-and-later-occurrence id needs the source baked
-        // in (see this function's doc comment) — the 1st occurrence's
-        // id is left exactly as it's always been, since changing it
-        // would churn every ordinary (non-duplicated) part's id/URL for
-        // no benefit.
-        id = occurrence === 1 ? `sharepoint-${slug}` : `${sourceId}-${slug}-${occurrence}`;
+        // Every id is scoped by source (see this function's doc
+        // comment) — only occurrences past the first get a numeric
+        // suffix, since a part_number's first row is already unique
+        // among this source's own rows without one.
+        id = occurrence === 1 ? `${sourceId}-${slug}` : `${sourceId}-${slug}-${occurrence}`;
       }
 
       return {
@@ -1105,9 +1103,10 @@ export async function addPartToWorkbook(
  * `identity` lets a caller give this instance its own id/label instead
  * of the "sharepoint" default — required once more than one SharePoint
  * workbook can be configured (see lib/sources/sharepoint-source-store.ts
- * and lib/getInventory.ts), since merge.ts and the priority list key
- * sources by id and two sources sharing an id would silently clobber
- * each other's provenance tracking.
+ * and lib/getInventory.ts), since merge.ts keys every Part's provenance
+ * (and mapTableRowsToRawParts keys every row's synthesized id) by this
+ * source id — two sources sharing an id would silently clobber each
+ * other's parts.
  */
 export function createSharePointExcelSource(
   accessToken: string,
