@@ -776,6 +776,71 @@ function withAutoNextUpn(headers: string[], rows: unknown[][], fields: PartField
   };
 }
 
+/**
+ * Read-only preview of what addPartToWorkbook's withAutoNextUpn would
+ * auto-fill this source's UPN#-shaped column with right now — for the
+ * "Add a part" form to show the technician the next number up front,
+ * before they've filled in anything else, rather than only learning it
+ * after the part is already saved. Mirrors the Table/worksheet header
+ * + row reading addPartToWorkbook does for the same purpose, but never
+ * writes anything. Returns undefined for the same "leave it for a
+ * human" cases withAutoNextUpn itself defers on: no UPN-shaped column
+ * on this sheet, or its last entry isn't a plain number to build on.
+ *
+ * This is a genuine preview, not a reservation — nothing stops two
+ * people opening the form at once from both seeing the same next
+ * number, and whichever one saves second gets whatever
+ * addPartToWorkbook computes fresh at that moment (skipping the
+ * now-taken number only if the form still sent this preview value
+ * along, which is unusual for this single-shop tool but not
+ * impossible to hit).
+ */
+export async function peekNextUpn(
+  client: Client,
+  fileBase: string,
+  tableOrWorksheetName: string,
+): Promise<{ header: string; next: string } | undefined> {
+  const tableBase = `${fileBase}/tables/${encodeURIComponent(tableOrWorksheetName)}`;
+  const tableExists = await probeTableExists(client, tableBase, tableOrWorksheetName);
+
+  if (tableExists) {
+    const headerRange = await runStep(
+      `Reading Table "${tableOrWorksheetName}"'s header row failed`,
+      () => client.api(`${tableBase}/headerRowRange`).get(),
+    );
+    const headers: string[] = (headerRange.values?.[0] ?? []).map((v: unknown) => String(v));
+    const header = findUpnHeader(headers);
+    const columnIndex = header ? headerIndex(headers, header) : -1;
+    if (!header || columnIndex === -1) {
+      return undefined;
+    }
+    const rowsResponse = await runStep(
+      `Reading Table "${tableOrWorksheetName}"'s rows failed`,
+      () => client.api(`${tableBase}/rows`).get(),
+    );
+    const tableRows: unknown[][] = (rowsResponse.value ?? []).map(
+      (row: { values: unknown[][] }) => row.values[0],
+    );
+    const next = nextSequentialValue(tableRows, columnIndex);
+    return next === undefined ? undefined : { header, next };
+  }
+
+  const worksheetBase = `${fileBase}/worksheets/${encodeURIComponent(tableOrWorksheetName)}`;
+  const usedRange = await runStep(
+    `Reading worksheet "${tableOrWorksheetName}" failed`,
+    () => client.api(`${worksheetBase}/usedRange`).get(),
+  );
+  const values: unknown[][] = usedRange.values ?? [];
+  const headers = (values[0] ?? []).map((v: unknown) => String(v));
+  const header = findUpnHeader(headers);
+  const columnIndex = header ? headerIndex(headers, header) : -1;
+  if (!header || columnIndex === -1) {
+    return undefined;
+  }
+  const next = nextSequentialValue(values.slice(1), columnIndex);
+  return next === undefined ? undefined : { header, next };
+}
+
 /** Overwrites the mapped cells of an existing row array in place —
  *  shared by the Table update and Table add-row paths, both of which
  *  work with a full-width row array matching the table's own header

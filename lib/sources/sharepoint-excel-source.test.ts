@@ -5,6 +5,7 @@ import {
   addPartToWorkbook,
   isItemNotFoundError,
   mapTableRowsToRawParts,
+  peekNextUpn,
   readWorkbookData,
   resolveFilePath,
   updatePartInWorkbook,
@@ -973,4 +974,76 @@ test("addPartToWorkbook: worksheet path auto-fills UPN# with one more than the l
     patches.map((p) => [p.path, (p.body as { values: unknown[][] }).values[0][0]]),
   );
   assert.equal(byAddress.get(`${worksheetBase}/range(address='C4')`), "596");
+});
+
+test("peekNextUpn: Table path previews one more than the last row's UPN# without writing anything", async () => {
+  const fileBase = "/sites/site-id/drive/root:/Inventory.xlsx:/workbook";
+  const tableBase = `${fileBase}/tables/Parts`;
+  const client = fakeClient({
+    [tableBase]: async () => ({ id: "table-1" }),
+    [`${tableBase}/headerRowRange`]: async () => ({
+      values: [["PartNumber", "QtyOnHand", "UPN#"]],
+    }),
+    [`${tableBase}/rows`]: async () => ({
+      value: [
+        { index: 0, values: [["OLD1", 3, "594"]] },
+        { index: 1, values: [["OLD2", 1, "595"]] },
+      ],
+    }),
+  });
+
+  const preview = await peekNextUpn(client, fileBase, "Parts");
+  assert.deepEqual(preview, { header: "UPN#", next: "596" });
+});
+
+test("peekNextUpn: worksheet path previews one more than the last row's UPN#", async () => {
+  const fileBase = "/sites/site-id/drive/root:/Inventory.xlsx:/workbook";
+  const tableBase = `${fileBase}/tables/Sheet1`;
+  const worksheetBase = `${fileBase}/worksheets/Sheet1`;
+  const client = fakeClient({
+    [tableBase]: async () => {
+      throw itemNotFoundError();
+    },
+    [`${worksheetBase}/usedRange`]: async () => ({
+      rowIndex: 0,
+      columnIndex: 0,
+      values: [
+        ["PartNumber", "QtyOnHand", "UPN#"],
+        ["OLD1", 3, "594"],
+        ["OLD2", 1, "595"],
+      ],
+    }),
+  });
+
+  const preview = await peekNextUpn(client, fileBase, "Sheet1");
+  assert.deepEqual(preview, { header: "UPN#", next: "596" });
+});
+
+test("peekNextUpn: returns undefined when the sheet has no UPN-shaped column", async () => {
+  const fileBase = "/sites/site-id/drive/root:/Inventory.xlsx:/workbook";
+  const tableBase = `${fileBase}/tables/Parts`;
+  const client = fakeClient({
+    [tableBase]: async () => ({ id: "table-1" }),
+    [`${tableBase}/headerRowRange`]: async () => ({
+      values: [["PartNumber", "QtyOnHand"]],
+    }),
+  });
+
+  const preview = await peekNextUpn(client, fileBase, "Parts");
+  assert.equal(preview, undefined);
+});
+
+test("peekNextUpn: returns undefined when the column has no prior numeric value to build on", async () => {
+  const fileBase = "/sites/site-id/drive/root:/Inventory.xlsx:/workbook";
+  const tableBase = `${fileBase}/tables/Parts`;
+  const client = fakeClient({
+    [tableBase]: async () => ({ id: "table-1" }),
+    [`${tableBase}/headerRowRange`]: async () => ({
+      values: [["PartNumber", "QtyOnHand", "UPN#"]],
+    }),
+    [`${tableBase}/rows`]: async () => ({ value: [] }),
+  });
+
+  const preview = await peekNextUpn(client, fileBase, "Parts");
+  assert.equal(preview, undefined);
 });

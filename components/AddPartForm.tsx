@@ -1,18 +1,28 @@
 "use client";
 
-import { AlertTriangle, ArrowLeft, PackagePlus } from "lucide-react";
+import { AlertTriangle, ArrowLeft, Hash, PackagePlus } from "lucide-react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { FormField } from "@/components/FormField";
 import { useInventory } from "@/components/InventoryProvider";
-import { CONDITION_OPTIONS } from "@/lib/types";
+import { CONDITION_OPTIONS, type ExtraFields } from "@/lib/types";
 
 /** The sheet header this app's Condition dropdown writes to — matches
  *  the "select" field name sharepoint-excel-source.ts classifies (see
  *  SELECT_FIELD_OPTIONS there). Kept as one literal here since, unlike
- *  UPN#, this is the only extra field the Add form sets by name. */
+ *  UPN#, this app doesn't know a source's UPN header ahead of time —
+ *  see the "Next UPN#" preview below, which learns it from
+ *  /api/parts/next-upn instead. */
 const CONDITION_HEADER = "Condition";
+
+/** The sheet header this app's Ebay-ready dropdown writes to — matches
+ *  the exact "(Yes/No)" spelling classifyExtraColumn's headerNamesBoolean
+ *  looks for in sharepoint-excel-source.ts, so a source with this
+ *  column reads the value back the same way it was written. A source
+ *  without this column simply ignores the field (see fieldAssignments),
+ *  same as Condition. */
+const EBAY_READY_HEADER = "Ebay Ready (Yes/No)";
 
 export function AddPartForm() {
   const router = useRouter();
@@ -24,9 +34,73 @@ export function AddPartForm() {
     bin_location: "",
     quantity_on_hand: "0",
     condition: "",
+    ebayReady: "",
+    upn: "",
   });
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  // The exact UPN-shaped header this source's sheet actually uses (e.g.
+  // "UPN#" vs "UPN #"), learned from the preview fetch below — needed
+  // so submit sends the value under the header the sheet expects rather
+  // than a guess. Null means "this source has no UPN-shaped column" (or
+  // the preview hasn't resolved yet), in which case no UPN field shows
+  // at all and the source's own auto-numbering (or lack of it) at save
+  // time is unaffected.
+  const [upnHeader, setUpnHeader] = useState<string | null>(null);
+  const [upnLoading, setUpnLoading] = useState(false);
+  // Whether the technician has hand-edited the picked number — a ref
+  // (not state) so the effect below can check it without needing to
+  // re-run every time it changes, which would trigger a pointless
+  // refetch on every keystroke.
+  const upnTouchedRef = useRef(false);
+
+  // Picks the next free UPN# as soon as a source is selected — right
+  // when the form opens, using the default source, and again whenever
+  // the technician switches sources — rather than only learning the
+  // number after the part is already saved (see peekNextUpn).
+  useEffect(() => {
+    const sourceId = form.sourceId;
+    // A source is only ever missing before any writable source loads
+    // in (the form itself doesn't render at all in that case — see the
+    // "No writable source yet" branch below) — nothing to preview, and
+    // nothing was showing a preview yet either, so there's no state to
+    // reset here.
+    if (!sourceId) {
+      return;
+    }
+    let cancelled = false;
+    upnTouchedRef.current = false;
+
+    // Wrapped in its own async function (rather than setState calls
+    // sitting directly in the effect body) purely to satisfy the
+    // set-state-in-effect lint rule — the actual behavior is the usual
+    // "fetch in an effect" shape: flip on a loading flag, fetch, then
+    // apply whatever came back unless this run was superseded.
+    async function loadUpnPreview() {
+      setUpnLoading(true);
+      try {
+        const response = await fetch(`/api/parts/next-upn?sourceId=${encodeURIComponent(sourceId)}`);
+        const payload: { header?: string | null; next?: string } = response.ok
+          ? await response.json()
+          : { header: null };
+        if (cancelled) return;
+        setUpnHeader(payload.header ?? null);
+        if (payload.header && payload.next && !upnTouchedRef.current) {
+          setForm((f) => (f.sourceId === sourceId ? { ...f, upn: payload.next as string } : f));
+        }
+      } catch {
+        if (!cancelled) setUpnHeader(null);
+      } finally {
+        if (!cancelled) setUpnLoading(false);
+      }
+    }
+
+    loadUpnPreview();
+    return () => {
+      cancelled = true;
+    };
+  }, [form.sourceId]);
 
   if (writableSources.length === 0) {
     return (
@@ -58,9 +132,27 @@ export function AddPartForm() {
     setError(null);
     try {
       const condition = form.condition.trim();
-      const extraFields = condition
-        ? { [CONDITION_HEADER]: { kind: "select" as const, value: condition, options: [...CONDITION_OPTIONS] } }
-        : undefined;
+      const upnValue = form.upn.trim();
+      const extraFields: ExtraFields = {};
+      if (condition) {
+        extraFields[CONDITION_HEADER] = {
+          kind: "select",
+          value: condition,
+          options: [...CONDITION_OPTIONS],
+        };
+      }
+      // Sends the picked-at-form-open number under this source's actual
+      // UPN header (learned from /api/parts/next-upn) rather than
+      // guessing a column name — withAutoNextUpn on the server only
+      // fills a blank UPN#, so a value supplied here always wins,
+      // matching what the technician saw on screen instead of
+      // whatever's freshest at save time.
+      if (upnHeader && upnValue) {
+        extraFields[upnHeader] = { kind: "text", value: upnValue };
+      }
+      if (form.ebayReady) {
+        extraFields[EBAY_READY_HEADER] = { kind: "boolean", value: form.ebayReady === "yes" };
+      }
       const response = await fetch("/api/parts", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -120,6 +212,30 @@ export function AddPartForm() {
       ) : null}
 
       <form onSubmit={handleSubmit} className="space-y-3 rounded-2xl border border-stone-200 bg-white p-4">
+        {upnHeader ? (
+          <div className="rounded-xl border border-amber-200 bg-amber-50 p-3">
+            <span className="mb-1 block text-[11px] font-semibold uppercase tracking-wide text-amber-700">
+              Next {upnHeader}
+            </span>
+            <div className="flex items-center gap-2">
+              <Hash className="size-4 shrink-0 text-amber-700" />
+              <input
+                value={form.upn}
+                onChange={(event) => {
+                  upnTouchedRef.current = true;
+                  setForm((f) => ({ ...f, upn: event.target.value }));
+                }}
+                className="h-9 w-28 rounded-lg border border-amber-300 bg-white px-2 font-mono text-sm outline-none focus:border-amber-500 focus:ring-2 focus:ring-amber-100"
+              />
+              <span className="text-xs leading-4 text-amber-700">
+                Picked automatically — change it if this one shouldn&apos;t be used.
+              </span>
+            </div>
+          </div>
+        ) : upnLoading ? (
+          <p className="text-xs text-stone-400">Checking for a UPN# column…</p>
+        ) : null}
+
         <label className="block">
           <span className="mb-1 block text-xs font-semibold uppercase tracking-wide text-stone-500">
             Add to source
@@ -180,6 +296,21 @@ export function AddPartForm() {
                 {option}
               </option>
             ))}
+          </select>
+        </label>
+
+        <label className="block">
+          <span className="mb-1 block text-xs font-semibold uppercase tracking-wide text-stone-500">
+            Ebay ready
+          </span>
+          <select
+            value={form.ebayReady}
+            onChange={(event) => setForm((f) => ({ ...f, ebayReady: event.target.value }))}
+            className="h-11 w-full rounded-xl border border-stone-200 bg-white px-3 text-sm outline-none focus:border-amber-400 focus:ring-2 focus:ring-amber-100"
+          >
+            <option value="">— Not set —</option>
+            <option value="yes">Yes</option>
+            <option value="no">No</option>
           </select>
         </label>
 
