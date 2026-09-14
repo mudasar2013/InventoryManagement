@@ -58,6 +58,14 @@ type InventoryContextValue = {
   /** SharePoint sources a part can be added to or edited in — see
    *  WritableSourceOption. */
   writableSources: WritableSourceOption[];
+  /** Human-readable label for every configured source, including the
+   *  read-only "local" demo catalog — unlike writableSources, this is
+   *  for DISPLAY only (e.g. "which sheet did this row come from"),
+   *  never for deciding what's editable. Keyed by the ids that show up
+   *  in Part.sourceIds. A part's sourceId can point at a source that's
+   *  since been removed from Settings, so lookups should fall back to
+   *  showing the raw id rather than nothing. */
+  sourceLabels: Record<string, string>;
   /** The full app-managed tag vocabulary (see lib/tags-store.ts) — for
    *  the tag filter on the Parts page and the tag picker on the part
    *  detail edit form. Managed from the Settings page, which reloads
@@ -117,6 +125,9 @@ export function InventoryProvider({
       .filter((status) => status.id !== "local")
       .map((status) => ({ id: status.id, label: status.label })),
   );
+  const [sourceLabels] = useState<Record<string, string>>(() =>
+    Object.fromEntries(initialSourceStatuses.map((status) => [status.id, status.label])),
+  );
   const [tags] = useState<string[]>(() => initialTags);
 
   const value = useMemo<InventoryContextValue>(() => {
@@ -126,6 +137,7 @@ export function InventoryProvider({
       jobParts,
       lastLinkMessage,
       writableSources,
+      sourceLabels,
       tags,
       jobsForPart: (partId: string) => getJobsForPart(partId, jobParts, jobs),
       isLinked: (jobId: string, partId: string) =>
@@ -214,7 +226,7 @@ export function InventoryProvider({
         );
       },
     };
-  }, [jobs, jobParts, lastLinkMessage, parts, tags, writableSources]);
+  }, [jobs, jobParts, lastLinkMessage, parts, sourceLabels, tags, writableSources]);
 
   return (
     <InventoryContext.Provider value={value}>{children}</InventoryContext.Provider>

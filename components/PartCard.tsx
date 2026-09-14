@@ -1,5 +1,8 @@
-import { ChevronRight, Hash, MapPin, Package, Tag } from "lucide-react";
+"use client";
+
+import { ChevronRight, Database, Hash, MapPin, Package, Tag } from "lucide-react";
 import Link from "next/link";
+import { useInventory } from "@/components/InventoryProvider";
 import { upnFromExtraFields, type Part } from "@/lib/types";
 import { PartStatusBadge } from "./StatusBadge";
 
@@ -17,7 +20,15 @@ export function PartCard({
   disableLink?: boolean;
   onClick?: () => void;
 }) {
+  const { sourceLabels } = useInventory();
   const upn = upnFromExtraFields(part.extraFields);
+  // A part reported by more than one source (see mergeParts) shows every
+  // source it merged from, so "why does this row look different from the
+  // sheet" is answerable at a glance instead of requiring a trip to
+  // Settings → Data sources.
+  const sourceLabel = (part.sourceIds ?? [])
+    .map((id) => sourceLabels[id] ?? id)
+    .join(" + ");
   const content = (
     <>
       <div className="flex size-11 shrink-0 items-center justify-center rounded-xl bg-amber-50 text-amber-700">
@@ -36,6 +47,12 @@ export function PartCard({
           <PartStatusBadge status={part.status} />
         </div>
         <p className="mt-1 text-sm leading-5 text-stone-600">{part.description}</p>
+        {sourceLabel ? (
+          <p className="mt-1 inline-flex items-center gap-1 text-[11px] font-medium text-sky-700">
+            <Database className="size-3 shrink-0" />
+            {sourceLabel}
+          </p>
+        ) : null}
         <dl className="mt-3 grid grid-cols-2 gap-2 text-xs">
           {upn ? (
             <div>

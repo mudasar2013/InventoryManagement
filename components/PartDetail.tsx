@@ -5,6 +5,7 @@ import {
   ArrowLeft,
   Check,
   ClipboardList,
+  Database,
   MapPin,
   Minus,
   Pencil,
@@ -23,7 +24,7 @@ import type { ExtraFields } from "@/lib/types";
 
 export function PartDetail({ partId }: { partId: string }) {
   const router = useRouter();
-  const { parts, jobsForPart, writableSources, applyPartUpdate, applyBulkUpdate } =
+  const { parts, jobsForPart, writableSources, sourceLabels, applyPartUpdate, applyBulkUpdate } =
     useInventory();
   const part = parts.find((item) => item.id === partId);
   const [editing, setEditing] = useState(false);
@@ -67,6 +68,9 @@ export function PartDetail({ partId }: { partId: string }) {
     editableSourceIds.includes(source.id),
   );
   const extraFieldEntries = Object.entries(part.extraFields ?? {});
+  const sourceLabel = (part.sourceIds ?? [])
+    .map((id) => sourceLabels[id] ?? id)
+    .join(" + ");
 
   function startEditing() {
     setError(null);
@@ -187,11 +191,19 @@ export function PartDetail({ partId }: { partId: string }) {
           {part.part_number}
         </p>
         <p className="mt-2 text-base leading-6 text-stone-600">{part.description}</p>
-        {part.category ? (
-          <p className="mt-2 inline-flex items-center rounded-full bg-stone-100 px-2.5 py-1 text-xs font-semibold text-stone-600">
-            {part.category}
-          </p>
-        ) : null}
+        <div className="mt-2 flex flex-wrap items-center gap-2">
+          {part.category ? (
+            <p className="inline-flex items-center rounded-full bg-stone-100 px-2.5 py-1 text-xs font-semibold text-stone-600">
+              {part.category}
+            </p>
+          ) : null}
+          {sourceLabel ? (
+            <p className="inline-flex items-center gap-1 rounded-full bg-sky-50 px-2.5 py-1 text-xs font-semibold text-sky-700">
+              <Database className="size-3.5" />
+              {sourceLabel}
+            </p>
+          ) : null}
+        </div>
       </section>
 
       {editing ? (
