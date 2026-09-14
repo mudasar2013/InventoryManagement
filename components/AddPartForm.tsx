@@ -3,9 +3,10 @@
 import { AlertTriangle, ArrowLeft, Hash, PackagePlus } from "lucide-react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { FormField } from "@/components/FormField";
 import { useInventory } from "@/components/InventoryProvider";
+import { distinctValues } from "@/lib/inventory";
 import { CONDITION_OPTIONS, type ExtraFields } from "@/lib/types";
 
 /** The sheet header this app's Condition dropdown writes to — matches
@@ -24,9 +25,25 @@ const CONDITION_HEADER = "Condition";
  *  same as Condition. */
 const EBAY_READY_HEADER = "Ebay Ready (Yes/No)";
 
+/** Sentinel <option> value for "none of the below — let me type one",
+ *  distinct from "" (which means "no location picked at all") so the
+ *  bin location <select> can tell the two apart. */
+const ADD_NEW_LOCATION = "__add-new-location__";
+
+/** Which <option> the bin location <select> should show as selected
+ *  for the current form value: the value itself when it's one of this
+ *  source's known locations, "" when the field is simply empty, or the
+ *  "Add a new location…" sentinel for anything else (a location typed
+ *  in before switching to a source that doesn't have it yet, say). */
+function binLocationSelectValue(value: string, options: string[]): string {
+  const trimmed = value.trim();
+  if (trimmed === "") return "";
+  return options.includes(trimmed) ? trimmed : ADD_NEW_LOCATION;
+}
+
 export function AddPartForm() {
   const router = useRouter();
-  const { writableSources, applyNewPart } = useInventory();
+  const { parts, writableSources, applyNewPart } = useInventory();
   const [form, setForm] = useState({
     sourceId: writableSources[0]?.id ?? "",
     part_number: "",
@@ -39,6 +56,29 @@ export function AddPartForm() {
   });
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  // Every bin location already in use by a part that touches the
+  // currently selected source — a fresh part almost always belongs
+  // wherever other parts from the same source already sit, so offering
+  // these as a dropdown beats retyping a bin string from memory (and
+  // the inevitable typo variants that come with it: "A-12-04" vs
+  // "A1204" vs "a-12-4"). Scoped to the selected source, not the whole
+  // catalog, since a bin string valid in one source's sheet isn't
+  // necessarily meaningful in another's. A part merged from more than
+  // one source (see mergeParts) only has the one bin_location that won
+  // the merge, so this can occasionally offer a location that actually
+  // came from a different source that also touches this part — a minor
+  // approximation, not a source of bad data (it's just a suggestion the
+  // technician picks from, never written back unreviewed).
+  const binLocationOptions = useMemo(
+    () =>
+      distinctValues(
+        parts
+          .filter((part) => (part.sourceIds ?? []).includes(form.sourceId))
+          .map((part) => part.bin_location),
+      ),
+    [parts, form.sourceId],
+  );
 
   // The exact UPN-shaped header this source's sheet actually uses (e.g.
   // "UPN#" vs "UPN #"), learned from the preview fetch below — needed
@@ -267,13 +307,53 @@ export function AddPartForm() {
           onChange={(value) => setForm((f) => ({ ...f, description: value }))}
           required={false}
         />
-        <FormField
-          label="Bin location"
-          placeholder="A-12-04"
-          value={form.bin_location}
-          onChange={(value) => setForm((f) => ({ ...f, bin_location: value }))}
-          required={false}
-        />
+        {binLocationOptions.length > 0 ? (
+          <div>
+            <label className="block">
+              <span className="mb-1 block text-xs font-semibold uppercase tracking-wide text-stone-500">
+                Bin location (optional)
+              </span>
+              <select
+                value={binLocationSelectValue(form.bin_location, binLocationOptions)}
+                onChange={(event) => {
+                  const next = event.target.value;
+                  setForm((f) => ({
+                    ...f,
+                    bin_location: next === ADD_NEW_LOCATION ? "" : next,
+                  }));
+                }}
+                className="h-11 w-full rounded-xl border border-stone-200 bg-white px-3 text-sm outline-none focus:border-amber-400 focus:ring-2 focus:ring-amber-100"
+              >
+                <option value="">— None —</option>
+                {binLocationOptions.map((location) => (
+                  <option key={location} value={location}>
+                    {location}
+                  </option>
+                ))}
+                <option value={ADD_NEW_LOCATION}>Add a new location…</option>
+              </select>
+            </label>
+            {binLocationSelectValue(form.bin_location, binLocationOptions) === ADD_NEW_LOCATION ? (
+              <input
+                autoFocus
+                placeholder="A-12-04"
+                value={form.bin_location}
+                onChange={(event) =>
+                  setForm((f) => ({ ...f, bin_location: event.target.value }))
+                }
+                className="mt-2 h-11 w-full rounded-xl border border-stone-200 bg-white px-3 text-sm outline-none focus:border-amber-400 focus:ring-2 focus:ring-amber-100"
+              />
+            ) : null}
+          </div>
+        ) : (
+          <FormField
+            label="Bin location"
+            placeholder="A-12-04"
+            value={form.bin_location}
+            onChange={(value) => setForm((f) => ({ ...f, bin_location: value }))}
+            required={false}
+          />
+        )}
         <FormField
           label="Quantity on hand"
           type="number"

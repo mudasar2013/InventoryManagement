@@ -6,7 +6,7 @@ import { useMemo, useState } from "react";
 import { BulkEditPanel } from "@/components/BulkEditPanel";
 import { LinkBanner } from "@/components/LinkBanner";
 import { PartCard } from "@/components/PartCard";
-import { countByStatus, searchParts } from "@/lib/inventory";
+import { countByStatus, distinctValues, searchParts } from "@/lib/inventory";
 import type { PartStatus } from "@/lib/types";
 import { useInventory } from "./InventoryProvider";
 
@@ -14,15 +14,6 @@ type Filter = "All" | PartStatus;
 
 const filters: Filter[] = ["All", "In Stock", "Low Stock", "Out of Stock"];
 const ALL = "All";
-
-/** Distinct, non-blank values for one field across every part, sorted
- *  for a stable dropdown order. Shared by the category and location
- *  filters — both read whatever values already exist in the merged
- *  catalog rather than a separately curated list (see SettingsView). */
-function distinctValues(values: (string | undefined)[]): string[] {
-  const set = new Set(values.map((value) => value?.trim()).filter((value): value is string => Boolean(value)));
-  return Array.from(set).sort((a, b) => a.localeCompare(b));
-}
 
 export function PartsExplorer() {
   const { parts, writableSources } = useInventory();

@@ -92,3 +92,16 @@ export function isPartLinkedToJob(
 ): boolean {
   return links.some((item) => item.job_id === jobId && item.part_id === partId);
 }
+
+/** Distinct, non-blank values for one field across a set of strings,
+ *  sorted for a stable dropdown order. Shared by the Parts page's
+ *  category/location/tag filters (PartsExplorer.tsx) and the Add-part
+ *  form's bin location dropdown (AddPartForm.tsx) — both read whatever
+ *  values already exist in the catalog rather than a separately
+ *  curated list. */
+export function distinctValues(values: (string | undefined)[]): string[] {
+  const set = new Set(
+    values.map((value) => value?.trim()).filter((value): value is string => Boolean(value)),
+  );
+  return Array.from(set).sort((a, b) => a.localeCompare(b));
+}
