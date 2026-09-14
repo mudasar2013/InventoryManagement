@@ -484,11 +484,25 @@ export async function readWorkbookData(
  * it's unit-testable without a live SharePoint connection — the actual
  * network shape (headers: string[], rows: unknown[][]) is exactly what
  * the Graph workbook range/rows APIs return.
+ *
+ * `sourceId` scopes the synthesized id given to a source's *second and
+ * later* occurrence of a repeated part_number (see partNumberOccurrences
+ * below) — without it, two different sources that each happen to repeat
+ * the same part_number the same number of times would synthesize the
+ * exact same id (e.g. two sources both reusing "W11688994" a second
+ * time would both get "sharepoint-w11688994-2"), so `parts.find(id)`
+ * would silently resolve to whichever source's row happened to come
+ * first in the merged list — editing "the 7300 Inventory row" would
+ * silently open and overwrite Hadi Inventory's row instead. A first
+ * occurrence doesn't need this: it's always deduped by part_number
+ * across sources in mergeParts, so it never lands in the id-colliding
+ * "standalone" list to begin with.
  */
 export function mapTableRowsToRawParts(
   headers: string[],
   rows: unknown[][],
   columnMap: SharePointColumnMap = COLUMN_MAP,
+  sourceId = "sharepoint",
 ): RawPart[] {
   const partNumberIdx = headerIndex(headers, columnMap.part_number);
   const descriptionIdx = headerIndex(headers, columnMap.description);
@@ -572,7 +586,12 @@ export function mapTableRowsToRawParts(
         id = String(row[idIdx]);
       } else {
         const slug = slugify(partNumber);
-        id = occurrence === 1 ? `sharepoint-${slug}` : `sharepoint-${slug}-${occurrence}`;
+        // Only the 2nd-and-later-occurrence id needs the source baked
+        // in (see this function's doc comment) — the 1st occurrence's
+        // id is left exactly as it's always been, since changing it
+        // would churn every ordinary (non-duplicated) part's id/URL for
+        // no benefit.
+        id = occurrence === 1 ? `sharepoint-${slug}` : `${sourceId}-${slug}-${occurrence}`;
       }
 
       return {
@@ -1101,9 +1120,10 @@ export function createSharePointExcelSource(
   // to fail on a bad table/worksheet name. Stays undefined until
   // fetchParts() has actually run at least once this request.
   let resolvedFileUrl: string | undefined;
+  const sourceId = identity?.id ?? "sharepoint";
 
   return {
-    id: identity?.id ?? "sharepoint",
+    id: sourceId,
     label: identity?.label ?? `SharePoint workbook (${config.filePath})`,
     async fetchParts(): Promise<RawPart[]> {
       const { client, fileBase, filePath, fileUrl } = await connectToWorkbook(
@@ -1113,7 +1133,7 @@ export function createSharePointExcelSource(
       resolvedFileUrl = fileUrl;
       const { headers, rows } = await readWorkbookData(client, fileBase, filePath, config.tableName);
 
-      return mapTableRowsToRawParts(headers, rows, config.columnMap ?? COLUMN_MAP);
+      return mapTableRowsToRawParts(headers, rows, config.columnMap ?? COLUMN_MAP, sourceId);
     },
     getFileUrl() {
       return resolvedFileUrl;
