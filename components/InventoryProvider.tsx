@@ -165,22 +165,26 @@ export function InventoryProvider({
       applyPartUpdate: (previousId: string, fields: EditablePartFields) => {
         const existing = getPartById(previousId, parts);
         // A part_number rename changes its synthesized id too — see the
-        // matching logic in mapTableRowsToRawParts. A sheet with its own
-        // id column would keep the same id across a rename, but this app
-        // doesn't know a part's id came from one vs. was synthesized, so
-        // it re-derives it the same way a fresh fetch would for the
-        // common case (a re-derived id can, rarely, land on whatever a
-        // *different* row for the renamed-to part_number already has —
+        // matching logic in mapTableRowsToRawParts, which scopes every id
+        // by the source it came from (mergeParts never merges rows across
+        // sources, so ids must be unique per source, not just per
+        // part_number). A sheet with its own id column would keep the
+        // same id across a rename, but this app doesn't know a part's id
+        // came from one vs. was synthesized, so it re-derives it the same
+        // way a fresh fetch would for the common case (a re-derived id
+        // can, rarely, land on whatever a *different* row for the
+        // renamed-to part_number already has within the same source —
         // resolved by the next full fetch). When the part_number hasn't
         // actually changed, though, the id stays exactly as it was: for
         // a part that's one of several rows sharing a part_number (see
         // RawPart.partNumberOccurrence), re-deriving from part_number
         // alone would collide it with the *first* such row's id instead
         // of leaving it as the specific row that was actually edited.
+        const sourceId = existing?.sourceIds?.[0] ?? "sharepoint";
         const newId =
           existing && existing.part_number === fields.part_number
             ? previousId
-            : `sharepoint-${slugify(fields.part_number)}`;
+            : `${sourceId}-${slugify(fields.part_number)}`;
         setParts((current) =>
           current.map((part) =>
             part.id === previousId
@@ -196,7 +200,12 @@ export function InventoryProvider({
         return newId;
       },
       applyNewPart: (fields: EditablePartFields, sourceId: string) => {
-        const newId = `sharepoint-${slugify(fields.part_number)}`;
+        // Matches the id mapTableRowsToRawParts will synthesize for this
+        // row on the next real fetch (scoped by source — see that
+        // function's doc comment) — otherwise the optimistic id used to
+        // navigate here immediately after adding wouldn't match the
+        // persisted part once the page re-fetches.
+        const newId = `${sourceId}-${slugify(fields.part_number)}`;
         setParts((current) => [
           ...current,
           {
