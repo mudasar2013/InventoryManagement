@@ -53,9 +53,9 @@ export default async function RootLayout({ children }: LayoutProps<"/">) {
           initialSourceStatuses={sourceStatuses}
           initialTags={tags}
         >
-          <div className="mx-auto flex min-h-full w-full max-w-lg flex-col px-5 pb-24 pt-7 sm:px-7">
+          <div id="app-shell" className="mx-auto flex min-h-full w-full max-w-lg flex-col px-5 pb-24 pt-7 sm:px-7">
             {session?.user ? (
-              <div className="mb-3 flex items-center justify-between gap-2 text-xs text-stone-500">
+              <div className="no-print mb-3 flex items-center justify-between gap-2 text-xs text-stone-500">
                 <span className="truncate">
                   Signed in as {session.user.name ?? session.user.email}
                 </span>
@@ -63,7 +63,7 @@ export default async function RootLayout({ children }: LayoutProps<"/">) {
               </div>
             ) : null}
             {session?.error === "RefreshAccessTokenError" ? (
-              <p className="mb-3 inline-flex items-start gap-2 rounded-2xl border border-rose-200 bg-rose-50 px-3.5 py-3 text-sm leading-5 text-rose-900">
+              <p className="no-print mb-3 inline-flex items-start gap-2 rounded-2xl border border-rose-200 bg-rose-50 px-3.5 py-3 text-sm leading-5 text-rose-900">
                 <AlertTriangle className="mt-0.5 size-4 shrink-0" />
                 Your Microsoft sign-in expired. Sign out and back in to
                 restore SharePoint inventory.
@@ -72,7 +72,7 @@ export default async function RootLayout({ children }: LayoutProps<"/">) {
             {warnings.map((warning) => (
               <p
                 key={warning}
-                className="mb-3 inline-flex items-start gap-2 rounded-2xl border border-amber-200 bg-amber-50 px-3.5 py-3 text-sm leading-5 text-amber-950"
+                className="no-print mb-3 inline-flex items-start gap-2 rounded-2xl border border-amber-200 bg-amber-50 px-3.5 py-3 text-sm leading-5 text-amber-950"
               >
                 <AlertTriangle className="mt-0.5 size-4 shrink-0" />
                 {warning}

@@ -1,12 +1,13 @@
 "use client";
 
-import { ClipboardList, Database, Package, Settings } from "lucide-react";
+import { BarChart3, ClipboardList, Database, Package, Settings } from "lucide-react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 
 const tabs = [
   { href: "/", label: "Parts", icon: Package, match: (path: string) => path === "/" || path.startsWith("/parts") },
   { href: "/jobs", label: "Jobs", icon: ClipboardList, match: (path: string) => path.startsWith("/jobs") },
+  { href: "/reports", label: "Reports", icon: BarChart3, match: (path: string) => path.startsWith("/reports") },
   { href: "/sources", label: "Sources", icon: Database, match: (path: string) => path.startsWith("/sources") },
   { href: "/settings", label: "Settings", icon: Settings, match: (path: string) => path.startsWith("/settings") },
 ];
@@ -17,7 +18,7 @@ export function BottomNav() {
   return (
     <nav
       aria-label="Primary"
-      className="fixed inset-x-0 bottom-0 z-20 border-t border-stone-200 bg-white/95 backdrop-blur-md"
+      className="no-print fixed inset-x-0 bottom-0 z-20 border-t border-stone-200 bg-white/95 backdrop-blur-md"
     >
       <ul className="mx-auto flex h-16 max-w-lg items-stretch">
         {tabs.map((tab) => {

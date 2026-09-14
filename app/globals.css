@@ -17,3 +17,22 @@ body {
   color: var(--foreground);
   font-family: var(--font-geist-sans), ui-sans-serif, system-ui, sans-serif;
 }
+
+/* Printing a report (see components/ReportsView.tsx's Print button):
+   hide app chrome that means nothing on paper (bottom nav, sign-in bar,
+   warning banners) and let the normally phone-width page shell use the
+   full sheet instead of staying pinned to its ~32rem on-screen width. */
+@media print {
+  .no-print {
+    display: none !important;
+  }
+
+  #app-shell {
+    max-width: 100% !important;
+    padding: 0 !important;
+  }
+
+  body {
+    background: #fff;
+  }
+}
