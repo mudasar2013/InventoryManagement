@@ -735,6 +735,22 @@ function findUpnHeader(headers: string[]): string | undefined {
   return headers.find((h) => /^upn\s*#?$/i.test(String(h ?? "").trim()));
 }
 
+/** Finds this sheet's "Ebay ready" column, if it has one — tolerant of
+ *  the "(Yes/N0)" typo seen on one source (a zero instead of "o"), but
+ *  intentionally never matches "Ebay Listed..." columns: those track
+ *  whether a part is currently live on eBay, a different concept from
+ *  whether it's ready to be listed. See peekEbayReadyHeader for why
+ *  AddPartForm.tsx can no longer hardcode one literal header string —
+ *  different sources spell this column differently, and a source with
+ *  no such column at all should offer no Ebay-ready field rather than
+ *  silently writing a value nowhere (see headerIndex's exact-match,
+ *  silent-no-op behavior, which is what let this go unnoticed). */
+function findEbayReadyHeader(headers: string[]): string | undefined {
+  return headers.find((h) =>
+    /^ebay\s*ready\s*\(\s*yes\s*\/\s*n[o0]\s*\)$/i.test(String(h ?? "").trim()),
+  );
+}
+
 /** Walks a column from the bottom row up, looking for the last
  *  non-blank value, and returns one more than it (as a string, since
  *  extra-field values are always string | boolean — see ExtraField).
@@ -856,6 +872,45 @@ export async function peekNextUpn(
   }
   const next = nextSequentialValue(values.slice(1), columnIndex);
   return next === undefined ? undefined : { header, next };
+}
+
+/**
+ * Read-only preview of this source's actual "Ebay ready" column header
+ * (see findEbayReadyHeader), for the "Add a part" form to learn before
+ * it can safely send an Ebay-ready value anywhere. Mirrors peekNextUpn's
+ * own Table/worksheet header reading, for the same reason: different
+ * sources spell this column differently ("Ebay Ready (Yes/No)" vs the
+ * "(Yes/N0)" typo on one source), so a single hardcoded literal wrote
+ * to no column at all on any source that didn't happen to match it.
+ * Returns undefined when this source has no Ebay-ready-shaped column —
+ * the form then shows no Ebay-ready field for that source, rather than
+ * offering a control that can't actually save anything.
+ */
+export async function peekEbayReadyHeader(
+  client: Client,
+  fileBase: string,
+  tableOrWorksheetName: string,
+): Promise<string | undefined> {
+  const tableBase = `${fileBase}/tables/${encodeURIComponent(tableOrWorksheetName)}`;
+  const tableExists = await probeTableExists(client, tableBase, tableOrWorksheetName);
+
+  if (tableExists) {
+    const headerRange = await runStep(
+      `Reading Table "${tableOrWorksheetName}"'s header row failed`,
+      () => client.api(`${tableBase}/headerRowRange`).get(),
+    );
+    const headers: string[] = (headerRange.values?.[0] ?? []).map((v: unknown) => String(v));
+    return findEbayReadyHeader(headers);
+  }
+
+  const worksheetBase = `${fileBase}/worksheets/${encodeURIComponent(tableOrWorksheetName)}`;
+  const usedRange = await runStep(
+    `Reading worksheet "${tableOrWorksheetName}" failed`,
+    () => client.api(`${worksheetBase}/usedRange`).get(),
+  );
+  const values: unknown[][] = usedRange.values ?? [];
+  const headers = (values[0] ?? []).map((v: unknown) => String(v));
+  return findEbayReadyHeader(headers);
 }
 
 /** Overwrites the mapped cells of an existing row array in place —

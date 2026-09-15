@@ -17,14 +17,6 @@ import { CONDITION_OPTIONS, type ExtraFields } from "@/lib/types";
  *  /api/parts/next-upn instead. */
 const CONDITION_HEADER = "Condition";
 
-/** The sheet header this app's Ebay-ready dropdown writes to — matches
- *  the exact "(Yes/No)" spelling classifyExtraColumn's headerNamesBoolean
- *  looks for in sharepoint-excel-source.ts, so a source with this
- *  column reads the value back the same way it was written. A source
- *  without this column simply ignores the field (see fieldAssignments),
- *  same as Condition. */
-const EBAY_READY_HEADER = "Ebay Ready (Yes/No)";
-
 /** Sentinel <option> value for "none of the below — let me type one",
  *  distinct from "" (which means "no location picked at all") so the
  *  bin location <select> can tell the two apart. */
@@ -89,6 +81,13 @@ export function AddPartForm() {
   // time is unaffected.
   const [upnHeader, setUpnHeader] = useState<string | null>(null);
   const [upnLoading, setUpnLoading] = useState(false);
+  // The exact Ebay-ready-shaped header this source's sheet actually
+  // uses (e.g. "Ebay Ready (Yes/No)" vs the "(Yes/N0)" typo on one
+  // source), learned the same way as upnHeader above — see
+  // peekEbayReadyHeader. Null means this source has no such column, in
+  // which case the Ebay-ready field doesn't show at all rather than
+  // offering a control that would silently save nowhere.
+  const [ebayReadyHeader, setEbayReadyHeader] = useState<string | null>(null);
   // Whether the technician has hand-edited the picked number — a ref
   // (not state) so the effect below can check it without needing to
   // re-run every time it changes, which would trigger a pointless
@@ -142,6 +141,38 @@ export function AddPartForm() {
     };
   }, [form.sourceId]);
 
+  // Learns this source's real Ebay-ready header the same way the UPN#
+  // preview above does — see peekEbayReadyHeader for why this can't be
+  // a hardcoded literal (components/AddPartForm.tsx used to hardcode
+  // "Ebay Ready (Yes/No)", which silently saved nowhere on any source
+  // spelling it differently, including the "(Yes/N0)" typo on one).
+  useEffect(() => {
+    const sourceId = form.sourceId;
+    if (!sourceId) {
+      return;
+    }
+    let cancelled = false;
+
+    async function loadEbayReadyHeader() {
+      try {
+        const response = await fetch(
+          `/api/parts/ebay-ready-header?sourceId=${encodeURIComponent(sourceId)}`,
+        );
+        const payload: { header?: string | null } = response.ok
+          ? await response.json()
+          : { header: null };
+        if (!cancelled) setEbayReadyHeader(payload.header ?? null);
+      } catch {
+        if (!cancelled) setEbayReadyHeader(null);
+      }
+    }
+
+    loadEbayReadyHeader();
+    return () => {
+      cancelled = true;
+    };
+  }, [form.sourceId]);
+
   if (writableSources.length === 0) {
     return (
       <main className="space-y-4">
@@ -190,8 +221,8 @@ export function AddPartForm() {
       if (upnHeader && upnValue) {
         extraFields[upnHeader] = { kind: "text", value: upnValue };
       }
-      if (form.ebayReady) {
-        extraFields[EBAY_READY_HEADER] = { kind: "boolean", value: form.ebayReady === "yes" };
+      if (ebayReadyHeader && form.ebayReady) {
+        extraFields[ebayReadyHeader] = { kind: "boolean", value: form.ebayReady === "yes" };
       }
       const response = await fetch("/api/parts", {
         method: "POST",
@@ -379,20 +410,22 @@ export function AddPartForm() {
           </select>
         </label>
 
-        <label className="block">
-          <span className="mb-1 block text-xs font-semibold uppercase tracking-wide text-stone-500">
-            Ebay ready
-          </span>
-          <select
-            value={form.ebayReady}
-            onChange={(event) => setForm((f) => ({ ...f, ebayReady: event.target.value }))}
-            className="h-11 w-full rounded-xl border border-stone-200 bg-white px-3 text-sm outline-none focus:border-amber-400 focus:ring-2 focus:ring-amber-100"
-          >
-            <option value="">— Not set —</option>
-            <option value="yes">Yes</option>
-            <option value="no">No</option>
-          </select>
-        </label>
+        {ebayReadyHeader ? (
+          <label className="block">
+            <span className="mb-1 block text-xs font-semibold uppercase tracking-wide text-stone-500">
+              Ebay ready
+            </span>
+            <select
+              value={form.ebayReady}
+              onChange={(event) => setForm((f) => ({ ...f, ebayReady: event.target.value }))}
+              className="h-11 w-full rounded-xl border border-stone-200 bg-white px-3 text-sm outline-none focus:border-amber-400 focus:ring-2 focus:ring-amber-100"
+            >
+              <option value="">— Not set —</option>
+              <option value="yes">Yes</option>
+              <option value="no">No</option>
+            </select>
+          </label>
+        ) : null}
 
         <button
           type="submit"
