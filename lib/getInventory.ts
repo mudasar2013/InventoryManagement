@@ -8,7 +8,6 @@ import {
 } from "./sources/resolve-sharepoint-source";
 import { createSharePointExcelSource, readSharePointExcelConfig } from "./sources/sharepoint-excel-source";
 import { isSourceStoreConfigured, listStoredSharePointSources } from "./sources/sharepoint-source-store";
-import { fetchTechScoreJobs, isTechScoreJobsConfigured } from "./sources/tech-score-jobs";
 import type { InventorySource } from "./sources/types";
 import { getTagsForParts, isTagStoreConfigured, listTags } from "./tags-store";
 import type { Job, JobPart, Part } from "./types";
@@ -233,26 +232,6 @@ export const loadInventory = cache(
       tags: tagsByPartNumber[part.part_number] ?? [],
     }));
 
-    // Jobs come from the bundled local demo list by default (see
-    // lib/sources/local-source.ts). When tech-score's job feed is
-    // configured, real Housecall Pro jobs replace that demo list
-    // outright so "Attach to a job" offers actual current work — see
-    // lib/sources/tech-score-jobs.ts for the endpoint contract and why
-    // this reaches it over HTTP rather than tech-score's database
-    // directly. A fetch failure falls back to the demo list rather than
-    // breaking the page, same as a failed SharePoint source.
-    let jobs = results.flatMap((result) => result.jobs);
-    if (isTechScoreJobsConfigured()) {
-      try {
-        jobs = await fetchTechScoreJobs();
-      } catch (error) {
-        console.error("[getInventory] tech-score jobs feed failed:", error);
-        warnings.push(
-          `Jobs from tech-score are unavailable right now (${describeError(error)}). Showing the built-in demo job list instead.`,
-        );
-      }
-    }
-
     const localResult = results.find((result) => result.sourceId === "local");
 
     const sourceStatuses: SourceStatus[] = [
@@ -289,7 +268,7 @@ export const loadInventory = cache(
 
     return {
       parts,
-      jobs,
+      jobs: results.flatMap((result) => result.jobs),
       jobParts: results.flatMap((result) => result.jobParts),
       warnings,
       sourceStatuses,
