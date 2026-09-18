@@ -10,10 +10,35 @@ import {
   connectToWorkbook,
   updatePartInWorkbook,
 } from "@/lib/sources/sharepoint-excel-source";
+import { reviseEbayQuantityBySku } from "@/lib/ebay/trading";
 
 async function requireAccessToken(): Promise<string | null> {
   const session = await getServerSession(authOptions);
   return session?.accessToken ?? null;
+}
+
+/**
+ * Best-effort push of a part's new quantity to its matching eBay
+ * listing by SKU (part_number) — see lib/ebay/trading.ts for why this
+ * is SKU-based with no ItemID lookup, and why 0 is how a listing gets
+ * ended. Called after every successful Add/Edit Part save (see POST
+ * and PATCH below) so a technician updating stock here is the only
+ * step needed; most parts aren't listed on eBay at all, so "eBay
+ * account is not connected" or an unrecognized-SKU error here is the
+ * common, harmless case, not a failure of the part save itself, which
+ * has already succeeded by the time this runs.
+ */
+async function syncQuantityToEbay(sku: string, quantity: number): Promise<void> {
+  try {
+    const result = await reviseEbayQuantityBySku(sku, quantity);
+    if (result.ok) {
+      console.log(`[ebay-sync] ${sku} -> qty ${quantity}: ${result.ack}`);
+    } else {
+      console.log(`[ebay-sync] ${sku} -> qty ${quantity} skipped/failed: ${result.errors.join("; ") || result.ack}`);
+    }
+  } catch (error) {
+    console.error(`[ebay-sync] ${sku} threw:`, error);
+  }
 }
 
 /**
@@ -54,6 +79,7 @@ export async function POST(request: Request) {
       resolved.config.columnMap ?? COLUMN_MAP,
       parsed.input.fields,
     );
+    await syncQuantityToEbay(parsed.input.fields.part_number, parsed.input.fields.quantity_on_hand);
     return NextResponse.json({ ok: true }, { status: 201 });
   } catch (error) {
     console.error("[api/parts] add failed:", error);
@@ -105,6 +131,7 @@ export async function PATCH(request: Request) {
       parsed.input.fields,
       parsed.input.existingPartOccurrence,
     );
+    await syncQuantityToEbay(parsed.input.fields.part_number, parsed.input.fields.quantity_on_hand);
     return NextResponse.json({ ok: true });
   } catch (error) {
     console.error("[api/parts] update failed:", error);
