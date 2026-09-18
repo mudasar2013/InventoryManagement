@@ -12,7 +12,7 @@ import { readEbayConfig } from "./config";
  * to exist.
  */
 
-const BROWSE_SCOPE = "https://api.ebay.com/oauth/api_scope/buy.browse.readonly";
+const BROWSE_SCOPE = "https://api.ebay.com/oauth/api_scope/buy.browse";
 
 function ebayIdentityTokenUrl(env: "production" | "sandbox"): string {
   return env === "sandbox"
