@@ -2,28 +2,46 @@ import { ebayTradingApiUrl, readEbayConfig } from "./config";
 import { getValidAccessToken } from "./oauth";
 
 /**
- * eBay's Trading API (XML, `api.dll`) — used only for
- * ReviseInventoryStatus, which is the one call that can set a live
- * listing's quantity straight from a SKU with no ItemID lookup at all.
- * This deliberately does NOT use the newer Sell Inventory API
+ * eBay's Trading API (XML, `api.dll`) — used to sync a part's quantity
+ * to its live eBay listing by SKU (see app/api/parts/route.ts, which
+ * calls reviseEbayQuantityBySku after every Add/Edit Part save).
+ *
+ * This does NOT use the newer Sell Inventory API
  * (bulkUpdatePriceQuantity / getOffers): that API's SKU-based
  * endpoints only recognize listings that were created (or migrated)
  * through the Inventory API itself, and 404 on ordinary listings made
  * through Seller Hub — which is how this shop's listings exist today.
- * ReviseInventoryStatus works on those directly.
  *
- * Setting Quantity to 0 is deliberately how "end this listing" is
- * implemented: eBay's default behavior (the "Out-of-Stock" listing
- * feature turned off, which is the default) ends a fixed-price
- * listing automatically once its available quantity hits zero — no
- * separate EndItem/ItemID call needed. If this shop ever turns the
- * Out-of-Stock feature ON in its eBay account, a 0 quantity will
- * instead just mark the listing unavailable rather than ending it;
- * see https://developer.ebay.com/api-docs/user-guides/static/trading-user-guide/out-of-stock-operation.html.
+ * It also does NOT call ReviseInventoryStatus with a bare <SKU> the
+ * way an earlier version of this file did — that only works when the
+ * listing's Item.InventoryTrackingMethod was set to SKU at the time
+ * it was originally listed via the Trading API, which Seller-Hub-
+ * created listings generally aren't, even when their Custom Label
+ * (SKU) field is set and matches exactly (confirmed against a real
+ * listing: eBay returned "Invalid SKU number" despite the SKU being
+ * correct — see https://developer.ebay.com/support/kb-article?KBid=1465).
+ * Every call here instead resolves the listing's ItemID from its SKU
+ * first (via GetSellerList's SKUArray filter, which eBay's own docs
+ * confirm works "regardless of Item.InventoryTrackingMethod"), then
+ * acts on that ItemID, which always works.
+ *
+ * Ending a listing also can't be done by setting Quantity to 0:
+ * ReviseInventoryStatus rejects that outright ("Invalid quantity...
+ * must be greater than 0 for active items" — same KB article above).
+ * EndFixedPriceItem is the real "end this listing" call, and it also
+ * needs an ItemID rather than a SKU.
  */
 
 const COMPATIBILITY_LEVEL = "1155";
 const SITE_ID = "0"; // eBay US
+const END_TIME_WINDOW_DAYS = 30;
+
+interface RawTradingApiResult {
+  ok: boolean;
+  ack: string | null;
+  errors: string[];
+  raw: string;
+}
 
 export interface TradingApiResult {
   ok: boolean;
@@ -55,10 +73,10 @@ function extractErrorMessages(xml: string): string[] {
   return messages;
 }
 
-async function callTradingApi(callName: string, bodyXml: string): Promise<TradingApiResult> {
+async function callTradingApi(callName: string, bodyXml: string): Promise<RawTradingApiResult> {
   const config = readEbayConfig();
   if (!config) {
-    return { ok: false, ack: null, errors: ["eBay app credentials are not configured."] };
+    return { ok: false, ack: null, errors: ["eBay app credentials are not configured."], raw: "" };
   }
 
   let accessToken: string | null;
@@ -69,10 +87,11 @@ async function callTradingApi(callName: string, bodyXml: string): Promise<Tradin
       ok: false,
       ack: null,
       errors: [error instanceof Error ? error.message : "Failed to get an eBay access token."],
+      raw: "",
     };
   }
   if (!accessToken) {
-    return { ok: false, ack: null, errors: ["eBay account is not connected."] };
+    return { ok: false, ack: null, errors: ["eBay account is not connected."], raw: "" };
   }
 
   let response: Response;
@@ -96,36 +115,93 @@ async function callTradingApi(callName: string, bodyXml: string): Promise<Tradin
       ok: false,
       ack: null,
       errors: [error instanceof Error ? error.message : "eBay Trading API request failed."],
+      raw: "",
     };
   }
 
   const text = await response.text();
   const ack = extractTag(text, "Ack");
   const errors = extractErrorMessages(text);
-  return { ok: ack === "Success" || ack === "Warning", ack, errors };
+  return { ok: ack === "Success" || ack === "Warning", ack, errors, raw: text };
 }
 
 /**
- * Sets a live eBay listing's available quantity by SKU. Pass 0 to end
- * the listing (see the module doc comment above for why that's
- * sufficient). `sku` is expected to be the part's `part_number` — see
- * app/api/parts/route.ts, which calls this after every successful
- * quantity save. Never throws: callers get back a result they can log
- * or surface, so a part's own save never fails just because eBay
- * rejected or couldn't reach the sync (e.g. this SKU isn't actually
- * listed on eBay, which is the common case for most parts).
+ * Resolves a SKU (the part's `part_number`) to the ItemID of the live
+ * eBay listing using that Custom Label — see the module doc comment
+ * for why this lookup is required before every revise/end call. Scoped
+ * with EndTimeFrom/EndTimeTo (now .. +30 days) rather than
+ * StartTimeFrom/To, which is eBay's own documented way to reliably
+ * catch Good-Til-Cancelled listings regardless of how long ago they
+ * were first listed — see
+ * https://developer.ebay.com/support/kb-article?KBid=5020. Returns
+ * null (not an error) when no listing has this SKU, which is the
+ * common case for parts that simply aren't on eBay.
+ */
+async function findItemIdBySku(sku: string): Promise<{ itemId: string | null; errors: string[] }> {
+  const now = new Date();
+  const windowEnd = new Date(now.getTime() + END_TIME_WINDOW_DAYS * 24 * 60 * 60 * 1000);
+  const body = `<?xml version="1.0" encoding="utf-8"?>
+<GetSellerListRequest xmlns="urn:ebay:apis:eBLBaseComponents">
+  <SKUArray>
+    <SKU>${xmlEscape(sku)}</SKU>
+  </SKUArray>
+  <EndTimeFrom>${now.toISOString()}</EndTimeFrom>
+  <EndTimeTo>${windowEnd.toISOString()}</EndTimeTo>
+  <Pagination>
+    <EntriesPerPage>10</EntriesPerPage>
+    <PageNumber>1</PageNumber>
+  </Pagination>
+</GetSellerListRequest>`;
+
+  const result = await callTradingApi("GetSellerList", body);
+  if (!result.ok) {
+    return { itemId: null, errors: result.errors.length ? result.errors : [`GetSellerList: ${result.ack ?? "failed"}`] };
+  }
+  const itemId = extractTag(result.raw, "ItemID");
+  return { itemId, errors: [] };
+}
+
+/**
+ * Sets a live eBay listing's available quantity by SKU (resolved to
+ * ItemID first — see findItemIdBySku), or ends the listing when
+ * quantity is 0 or less. `sku` is expected to be the part's
+ * `part_number` — see app/api/parts/route.ts, which calls this after
+ * every successful quantity save. Never throws: callers get back a
+ * result they can log or surface, so a part's own save never fails
+ * just because eBay rejected the sync or this SKU isn't listed there
+ * at all (the common case for most parts).
  */
 export async function reviseEbayQuantityBySku(
   sku: string,
   quantity: number,
 ): Promise<TradingApiResult> {
+  const { itemId, errors: lookupErrors } = await findItemIdBySku(sku);
+  if (!itemId) {
+    return {
+      ok: false,
+      ack: null,
+      errors: lookupErrors.length ? lookupErrors : [`No eBay listing found with SKU "${sku}".`],
+    };
+  }
+
   const safeQuantity = Math.max(0, Math.trunc(quantity));
-  const body = `<?xml version="1.0" encoding="utf-8"?>
+  if (safeQuantity > 0) {
+    const body = `<?xml version="1.0" encoding="utf-8"?>
 <ReviseInventoryStatusRequest xmlns="urn:ebay:apis:eBLBaseComponents">
   <InventoryStatus>
-    <SKU>${xmlEscape(sku)}</SKU>
+    <ItemID>${xmlEscape(itemId)}</ItemID>
     <Quantity>${safeQuantity}</Quantity>
   </InventoryStatus>
 </ReviseInventoryStatusRequest>`;
-  return callTradingApi("ReviseInventoryStatus", body);
+    const result = await callTradingApi("ReviseInventoryStatus", body);
+    return { ok: result.ok, ack: result.ack, errors: result.errors };
+  }
+
+  const body = `<?xml version="1.0" encoding="utf-8"?>
+<EndFixedPriceItemRequest xmlns="urn:ebay:apis:eBLBaseComponents">
+  <ItemID>${xmlEscape(itemId)}</ItemID>
+  <EndingReason>NotAvailable</EndingReason>
+</EndFixedPriceItemRequest>`;
+  const result = await callTradingApi("EndFixedPriceItem", body);
+  return { ok: result.ok, ack: result.ack, errors: result.errors };
 }
