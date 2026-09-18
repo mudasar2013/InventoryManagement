@@ -16,6 +16,7 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useState } from "react";
 import { AttachPartToJob } from "@/components/AttachPartToJob";
+import { EbayPanel } from "@/components/EbayPanel";
 import { FormField } from "@/components/FormField";
 import { useInventory } from "@/components/InventoryProvider";
 import { LinkBanner } from "@/components/LinkBanner";
@@ -361,6 +362,12 @@ export function PartDetail({ partId }: { partId: string }) {
       </section>
 
       <TagsEditor part={part} applyBulkUpdate={applyBulkUpdate} />
+
+      <EbayPanel
+        partNumber={part.part_number}
+        description={part.description}
+        category={part.category ?? undefined}
+      />
 
       {extraFieldEntries.length > 0 ? (
         <section className="space-y-2">

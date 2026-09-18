@@ -205,3 +205,59 @@ export async function reviseEbayQuantityBySku(
   const result = await callTradingApi("EndFixedPriceItem", body);
   return { ok: result.ok, ack: result.ack, errors: result.errors };
 }
+
+function xmlUnescape(value: string): string {
+  return value
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&quot;/g, "\"")
+    .replace(/&apos;/g, "'")
+    .replace(/&amp;/g, "&");
+}
+
+export interface EbayListingSnapshot {
+  itemId: string;
+  title: string | null;
+  descriptionHtml: string | null;
+}
+
+/**
+ * Fetches a live eBay listing's current title and description by SKU
+ * (via the same findItemIdBySku lookup every other call here uses) —
+ * the "Actual" side of the Add/Edit Part eBay-description panel (see
+ * components/PartDetail.tsx), compared against an AI-drafted
+ * "Suggested" description from app/api/ebay/suggest-description.
+ * Returns null when this SKU isn't listed on eBay at all, same as
+ * reviseEbayQuantityBySku's "not found" case.
+ */
+export async function getEbayListingBySku(sku: string): Promise<{
+  listing: EbayListingSnapshot | null;
+  errors: string[];
+}> {
+  const { itemId, errors: lookupErrors } = await findItemIdBySku(sku);
+  if (!itemId) {
+    return { listing: null, errors: lookupErrors };
+  }
+
+  const body = `<?xml version="1.0" encoding="utf-8"?>
+<GetItemRequest xmlns="urn:ebay:apis:eBLBaseComponents">
+  <ItemID>${xmlEscape(itemId)}</ItemID>
+  <DetailLevel>ItemReturnDescription</DetailLevel>
+</GetItemRequest>`;
+  const result = await callTradingApi("GetItem", body);
+  if (!result.ok) {
+    return { listing: null, errors: result.errors.length ? result.errors : [`GetItem: ${result.ack ?? "failed"}`] };
+  }
+
+  const title = extractTag(result.raw, "Title");
+  const rawDescription = extractTag(result.raw, "Description");
+  return {
+    listing: {
+      itemId,
+      title: title ? xmlUnescape(title) : null,
+      descriptionHtml: rawDescription ? xmlUnescape(rawDescription) : null,
+    },
+    errors: [],
+  };
+}
+
